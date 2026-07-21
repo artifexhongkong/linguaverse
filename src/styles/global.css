@@ -1,0 +1,60 @@
+:root {
+  --bg-deep: #060912;
+  --bg-base: #0a0f1e;
+  --bg-elev: #111827;
+  --bg-card: rgba(255, 255, 255, 0.04);
+  --bg-card-hover: rgba(255, 255, 255, 0.07);
+  --bg-input: rgba(255, 255, 255, 0.05);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #64748b;
+  --primary: #0ea5e9;
+  --primary-light: #38bdf8;
+  --accent: #10b981;
+  --accent-light: #34d399;
+  --warn: #f59e0b;
+  --warn-light: #fbbf24;
+  --error: #ef4444;
+  --grad-primary: linear-gradient(135deg, #0ea5e9 0%, #10b981 100%);
+  --font-sans: "Inter", "Noto Sans TC", system-ui, sans-serif;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --r-full: 999px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 0.4s;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#root { height: 100%; width: 100%; }
+
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, textarea { font-family: inherit; -webkit-appearance: none; appearance: none; }
+::selection { background: rgba(14, 165, 233, 0.4); color: #fff; }
+::-webkit-scrollbar { width: 0; display: none; }
+
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+.anim-up { animation: fadeInUp var(--dur) var(--ease-out) both; }
+.anim-fade { animation: fadeIn var(--dur) var(--ease-out) both; }
+.anim-slide-up { animation: slideUp 0.35s var(--ease-out) both; }
