@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import OPENAI_API_BASE
+from config import settings
 
 app = FastAPI(title="LinguaVerse API", version="1.0.0")
 
@@ -16,4 +16,8 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "api_base": OPENAI_API_BASE}
+    return {
+        "status": "ok",
+        "api_base": settings.AGNES_BASE_URL,
+        "model": settings.AGNES_MODEL,
+    }
