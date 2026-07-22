@@ -125,3 +125,72 @@ export async function incrementQuota(used: number): Promise<void> {
       .eq("id", existing.id);
   }
 }
+
+export interface CustomPromptRecord {
+  id: string;
+  name: string;
+  domain: string;
+  base_override: string | null;
+  domain_override: string | null;
+  style_override: string | null;
+  output_override: string | null;
+  terminology: Record<string, string> | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchCustomPrompts(): Promise<CustomPromptRecord[]> {
+  if (!isSupabaseConfigured) return [];
+  const { data, error } = await supabase
+    .from("custom_prompts")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as CustomPromptRecord[];
+}
+
+export async function insertCustomPrompt(
+  record: Omit<CustomPromptRecord, "id" | "created_at" | "updated_at">
+): Promise<CustomPromptRecord | null> {
+  if (!isSupabaseConfigured) return null;
+  const { data, error } = await supabase
+    .from("custom_prompts")
+    .insert(record)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data as CustomPromptRecord | null;
+}
+
+export async function updateCustomPrompt(
+  id: string,
+  updates: Partial<CustomPromptRecord>
+): Promise<CustomPromptRecord | null> {
+  if (!isSupabaseConfigured) return null;
+  const { data, error } = await supabase
+    .from("custom_prompts")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data as CustomPromptRecord | null;
+}
+
+export async function deleteCustomPrompt(id: string): Promise<void> {
+  if (!isSupabaseConfigured) return;
+  const { error } = await supabase.from("custom_prompts").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function setActivePrompt(id: string, active: boolean): Promise<void> {
+  if (!isSupabaseConfigured) return;
+  if (active) {
+    await supabase.from("custom_prompts").update({ is_active: false }).neq("id", id);
+  }
+  await supabase
+    .from("custom_prompts")
+    .update({ is_active: active, updated_at: new Date().toISOString() })
+    .eq("id", id);
+}

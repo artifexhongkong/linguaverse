@@ -1,14 +1,19 @@
 import { getContextMode } from "../lib/languages";
 import { translate as legacyTranslate, type TranslationResult } from "../lib/translate";
+import { assemblePrompt } from "../prompts/prompt-assembler";
+import type { PromptAssemblyOptions, DomainCode } from "../prompts/types";
 
 export interface SchedulerResult extends TranslationResult {
   engine: "llm" | "machine-fallback";
   fallbackNotice?: string;
+  promptLayers?: { base: string; domain: string; style: string; output: string };
 }
 
 export interface SchedulerOptions {
   timeoutMs?: number;
   maxRetries?: number;
+  domain?: DomainCode | "custom";
+  customPrompt?: PromptAssemblyOptions;
 }
 
 const DEFAULT_TIMEOUT = 8000;
@@ -84,6 +89,14 @@ export async function scheduleTranslation(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT;
   const maxRetries = options?.maxRetries ?? DEFAULT_RETRIES;
   const ctx = getContextMode(context);
+  const domain = options?.domain ?? "custom";
+
+  const assembled = assemblePrompt({
+    domain,
+    ...options?.customPrompt,
+    sourceLang,
+    targetLang,
+  });
 
   const trimmed = text.trim();
   if (!trimmed) {
@@ -103,6 +116,7 @@ export async function scheduleTranslation(
           ...result,
           engine: "llm",
           contextNote: result.contextNote ?? `AI 語境翻譯 · ${ctx.name}模式`,
+          promptLayers: assembled.layers,
         };
       } catch (error) {
         lastError = error;

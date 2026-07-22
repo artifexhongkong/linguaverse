@@ -296,6 +296,43 @@
 }
 .toggle-switch.on .toggle-knob { transform: translateX(20px); }
 
+.prompt-editor { margin-top: 12px; }
+.prompt-section-label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+.domain-template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.domain-template-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 12px; cursor: pointer; transition: all 0.2s var(--ease-out); }
+.domain-template-card:hover { background: var(--bg-card-hover); border-color: var(--border-strong); }
+.domain-template-icon { font-size: 20px; margin-bottom: 6px; }
+.domain-template-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+.domain-template-desc { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+.prompt-actions-bar { display: flex; gap: 8px; margin: 8px 0; }
+.prompt-btn { padding: 8px 16px; border-radius: var(--r-sm); font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.2s var(--ease-out); }
+.prompt-btn.primary { background: var(--primary); color: white; }
+.prompt-btn.primary:hover { background: var(--primary-light); }
+.prompt-btn.secondary { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+.prompt-btn.secondary:hover { background: var(--bg-card-hover); }
+.prompt-empty { text-align: center; padding: 24px; color: var(--text-muted); font-size: 13px; }
+
+.prompt-list { display: flex; flex-direction: column; gap: 6px; }
+.prompt-item { display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 10px 12px; }
+.prompt-item-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.prompt-item-meta { display: flex; gap: 4px; margin-top: 3px; }
+.prompt-item-tag { font-size: 10px; padding: 2px 6px; border-radius: var(--r-full); background: var(--bg-input); color: var(--text-muted); }
+.prompt-item-tag.active { background: rgba(16, 185, 129, 0.15); color: var(--accent-light); }
+.prompt-item-actions { display: flex; gap: 4px; }
+.prompt-icon-btn { width: 30px; height: 30px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; color: var(--text-muted); transition: all 0.2s var(--ease-out); }
+.prompt-icon-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.prompt-icon-btn.danger:hover { color: var(--error); }
+.prompt-icon-btn svg { width: 15px; height: 15px; }
+
+.prompt-edit-form { margin-top: 16px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 16px; }
+.prompt-edit-section { margin-bottom: 12px; }
+.prompt-edit-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+.prompt-edit-input, .prompt-edit-select { width: 100%; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px; color: var(--text-primary); font-family: inherit; }
+.prompt-edit-textarea { width: 100%; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 8px 10px; font-size: 12px; color: var(--text-primary); font-family: monospace; resize: vertical; line-height: 1.5; }
+.prompt-preview { background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 10px; font-size: 11px; color: var(--text-muted); font-family: monospace; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; line-height: 1.5; }
+.prompt-edit-actions { display: flex; gap: 8px; margin-top: 8px; }
+
 .paywall-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(8px); z-index: 150; display: flex; align-items: flex-end; justify-content: center; animation: fadeIn 0.3s var(--ease-out) both; }
 .paywall {
   width: 100%; max-width: 480px; background: var(--bg-elev); border-radius: var(--r-xl) var(--r-xl) 0 0;
