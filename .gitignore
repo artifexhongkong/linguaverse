@@ -10,3 +10,9 @@ android/local.properties
 *.keystore
 .env
 .v3/
+
+# Python
+backend/venv/
+backend/__pycache__/
+__pycache__/
+*.pyc
