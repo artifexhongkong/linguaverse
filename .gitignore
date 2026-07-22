@@ -7,7 +7,12 @@ android/captures/
 android/local.properties
 *.apk
 *.aab
-*.keystore
+# Supabase local development (.env)
+supabase/.env
+supabase/config.toml
+
+# Backend env
+backend/.env
 .env
 .v3/
 

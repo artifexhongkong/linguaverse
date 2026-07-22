@@ -6,9 +6,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const AGNES_API_KEY = "sk-Gi9O49HmwmY8IodPXxQ3e0mxJdp0GSnUxsddLe1dgHbVCUUs";
-const AGNES_BASE_URL = "https://api.agnes.ai/v1";
-const AGNES_MODEL = "Agnes-2.0-Flash";
+const AGNES_API_KEY = Deno.env.get("AGNES_API_KEY") ?? "";
+const AGNES_BASE_URL = Deno.env.get("AGNES_BASE_URL") ?? "https://api.agnes.ai/v1";
+const AGNES_MODEL = Deno.env.get("AGNES_MODEL") ?? "Agnes-2.0-Flash";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
