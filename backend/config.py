@@ -8,9 +8,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    AGNES_API_KEY: str
-    AGNES_BASE_URL: str = "https://api.agnes.ai/v1"
-    AGNES_MODEL: str = "Agnes-2.0-Flash"
+    # Primary AI Provider: Groq (LLaMA 3.1)
+    # Get free key: https://console.groq.com/keys
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.1-8b-instant"
+
+    # Fallback AI Provider: OpenRouter
+    # Get free key: https://openrouter.ai/keys
+    OPENROUTER_API_KEY: str = ""
+
+    # Supabase
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
 
 
 settings = Settings()
