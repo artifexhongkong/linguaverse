@@ -24,6 +24,7 @@ export function TranslatePage({
   const [loading, setLoading] = useState(false);
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
   const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const charLimit = 500;
   const remaining = quotaLimit - quotaUsed;
@@ -34,9 +35,12 @@ export function TranslatePage({
     setLoading(true);
     setResult(null);
     setSaved(false);
+    setErrorMsg(null);
+
     try {
       const res = await scheduleTranslation(input, sourceLang, targetLang, context);
       setResult(res);
+
       await insertTranslation({
         source_text: input.trim(), translated_text: res.text,
         source_lang: res.detectedLang ?? sourceLang, target_lang: targetLang,
@@ -45,8 +49,10 @@ export function TranslatePage({
       await incrementQuota(1);
       onQuotaUpdate();
       setSaved(true);
-    } catch {
-      onToast("翻譯失敗，請稍後再試");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "翻譯失敗，請稍後再試";
+      setErrorMsg(msg);
+      onToast(msg.length > 50 ? msg.slice(0, 50) + "…" : msg);
     } finally {
       setLoading(false);
     }
@@ -62,7 +68,7 @@ export function TranslatePage({
     try { await navigator.clipboard.writeText(result.text); onToast("已複製到剪貼簿"); } catch { onToast("複製失敗"); }
   };
 
-  const handleClear = () => { setInput(""); setResult(null); setSaved(false); };
+  const handleClear = () => { setInput(""); setResult(null); setSaved(false); setErrorMsg(null); };
 
   const confidenceLevel = result
     ? result.confidence >= 0.85 ? "high" : result.confidence >= 0.6 ? "mid" : "low"
@@ -107,6 +113,7 @@ export function TranslatePage({
             const val = e.target.value.slice(0, charLimit);
             setInput(val);
             if (result) { setResult(null); setSaved(false); }
+            if (errorMsg) setErrorMsg(null);
           }}
           maxLength={charLimit}
         />
@@ -142,16 +149,29 @@ export function TranslatePage({
         )}
       </button>
 
+      {/* Error message display */}
+      {errorMsg && (
+        <div className="result-card anim-up result-fallback">
+          <div className="fallback-notice">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
+              <path d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+            </svg>
+            {errorMsg}
+          </div>
+        </div>
+      )}
+
       {result && (
-        <div className={`result-card anim-up ${result.engine === "machine-fallback" ? "result-fallback" : ""}`}>
+        <div className={`result-card anim-up ${result.engine === "ai-fallback" ? "result-fallback" : ""}`}>
           <div className="result-header">
             <div className="result-label">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              {result.engine === "machine-fallback" ? "機器兜底翻譯" : `Agnes-2.0-Flash 翻譯`} {saved && "· 已儲存"}
+              {result.engine === "ai-fallback" ? "AI 備選翻譯" : `AI 語境翻譯`}{saved && " · 已儲存"}
             </div>
           </div>
+
           {result.fallbackNotice && (
             <div className="fallback-notice">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
@@ -160,7 +180,9 @@ export function TranslatePage({
               {result.fallbackNotice}
             </div>
           )}
+
           <div className="result-text">{result.text}</div>
+
           {result.contextNote && (
             <div className="context-note">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
@@ -169,12 +191,16 @@ export function TranslatePage({
               {result.contextNote}
             </div>
           )}
+
           <div className="result-footer">
             <div className="confidence-badge">
               <span className={`confidence-dot ${confidenceLevel}`} />
               信心指數 {Math.round(result.confidence * 100)}%
             </div>
             <div className="result-actions">
+              {result.model && (
+                <span className="model-badge">{result.model}</span>
+              )}
               <button className="icon-btn" onClick={handleCopy} aria-label="複製">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
