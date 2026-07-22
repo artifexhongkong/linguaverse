@@ -1,15 +1,21 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-    detectSessionInUrl: false,
+export const supabase = createClient(
+  supabaseUrl || "https://placeholder.supabase.co",
+  supabaseAnonKey || "placeholder-anon-key",
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
   },
-});
+);
+
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
 export interface TranslationRecord {
   id: string;
@@ -35,6 +41,7 @@ export interface UserSettings {
 }
 
 export async function fetchTranslations(): Promise<TranslationRecord[]> {
+  if (!isSupabaseConfigured) return [];
   const { data, error } = await supabase
     .from("translations")
     .select("*")
@@ -47,6 +54,7 @@ export async function fetchTranslations(): Promise<TranslationRecord[]> {
 export async function insertTranslation(
   record: Omit<TranslationRecord, "id" | "created_at" | "is_favorite">
 ): Promise<TranslationRecord | null> {
+  if (!isSupabaseConfigured) return null;
   const { data, error } = await supabase
     .from("translations")
     .insert(record)
@@ -57,6 +65,7 @@ export async function insertTranslation(
 }
 
 export async function toggleFavorite(id: string, fav: boolean): Promise<void> {
+  if (!isSupabaseConfigured) return;
   const { error } = await supabase
     .from("translations")
     .update({ is_favorite: fav })
@@ -65,11 +74,13 @@ export async function toggleFavorite(id: string, fav: boolean): Promise<void> {
 }
 
 export async function deleteTranslation(id: string): Promise<void> {
+  if (!isSupabaseConfigured) return;
   const { error } = await supabase.from("translations").delete().eq("id", id);
   if (error) throw error;
 }
 
 export async function fetchSettings(): Promise<UserSettings | null> {
+  if (!isSupabaseConfigured) return null;
   const { data, error } = await supabase
     .from("user_settings")
     .select("*")
@@ -82,6 +93,7 @@ export async function fetchSettings(): Promise<UserSettings | null> {
 export async function upsertSettings(
   settings: Partial<UserSettings>
 ): Promise<UserSettings | null> {
+  if (!isSupabaseConfigured) return null;
   const existing = await fetchSettings();
   if (existing) {
     const { data, error } = await supabase
@@ -104,6 +116,7 @@ export async function upsertSettings(
 }
 
 export async function incrementQuota(used: number): Promise<void> {
+  if (!isSupabaseConfigured) return;
   const existing = await fetchSettings();
   if (existing) {
     await supabase

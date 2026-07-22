@@ -5,7 +5,7 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PricingPage } from "./pages/PricingPage";
 import { Paywall } from "./components/Paywall";
-import { fetchSettings, upsertSettings, type UserSettings } from "./lib/supabase";
+import { fetchSettings, upsertSettings, type UserSettings, isSupabaseConfigured } from "./lib/supabase";
 import "./styles/app.css";
 
 const FREE_QUOTA = 30;
@@ -39,6 +39,7 @@ export default function App() {
   }, [toast, toastKey]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured) return;
     (async () => {
       try {
         const s = await fetchSettings();
@@ -62,12 +63,12 @@ export default function App() {
   const handleLangChange = (source: string, target: string) => {
     setSourceLang(source);
     setTargetLang(target);
-    upsertSettings({ default_source_lang: source, default_target_lang: target }).catch(() => {});
+    if (isSupabaseConfigured) upsertSettings({ default_source_lang: source, default_target_lang: target }).catch(() => {});
   };
 
   const handleContextChange = (ctx: string) => {
     setContext(ctx);
-    upsertSettings({ default_context: ctx }).catch(() => {});
+    if (isSupabaseConfigured) upsertSettings({ default_context: ctx }).catch(() => {});
   };
 
   const handleQuotaUpdate = () => {
@@ -77,14 +78,19 @@ export default function App() {
 
   const handleUpgrade = (newPlan: string) => {
     if (newPlan === "enterprise") { showToast("已為您建立聯絡請求，專員將與您聯繫"); return; }
-    upsertSettings({ plan: newPlan })
-      .then((s) => {
-        if (s) { setSettings(s); setQuotaUsed(0); }
-        setShowPricing(false);
-        setShowPaywall(false);
-        showToast(newPlan === "pro" ? "已升級至 Pro 方案！" : "方案已更新");
-      })
-      .catch(() => showToast("升級失敗，請稍後再試"));
+    setPlan(newPlan);
+    setShowPricing(false);
+    showToast(`已升級至 ${newPlan === "pro" ? "Pro" : "Enterprise"} 方案`);
+    if (isSupabaseConfigured) {
+      upsertSettings({ plan: newPlan })
+        .then((s) => {
+          if (s) { setSettings(s); setQuotaUsed(0); }
+          setShowPaywall(false);
+        })
+        .catch(() => showToast("升級失敗，請稍後再試"));
+    } else {
+      setShowPaywall(false);
+    }
   };
 
   const handleTabChange = (newTab: Tab) => {
