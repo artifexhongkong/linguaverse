@@ -82,7 +82,7 @@ export async function scheduleTranslation(
         engine: "agnes",
         model: result.model,
         detectedLang: sourceLang === "auto" ? undefined : sourceLang,
-        contextNote: `Agnes-2.0-Flash · ${ctx.name}模式`,
+        contextNote: `${result.model ?? "agnes-2.0-flash"} · ${ctx.name}模式`,
         promptLayers: assembled.layers,
       };
     } catch (error) {

@@ -1,6 +1,6 @@
 # LinguaVerse — AI 語境翻譯 App
 
-LinguaVerse 是一款手機 AI 語境翻譯應用程式，使用 Capacitor 將 React Web App 包裝為原生 Android App。
+LinguaVerse 是一款手機 AI 語境翻譯應用程式，使用 Capacitor 將 React Web App 包裝為原生 Android App，後端翻譯由 **Agnes AI `agnes-2.0-flash`** 模型驅動。
 
 ## 功能特色
 
@@ -15,25 +15,91 @@ LinguaVerse 是一款手機 AI 語境翻譯應用程式，使用 Capacitor 將 R
 
 - **前端**：React 18 + TypeScript + Vite
 - **原生包裝**：Capacitor 6（Android）
-- **後端**：Supabase（PostgreSQL 資料庫）
-- **翻譯引擎**：內建語境感知翻譯邏輯
+- **後端 API（可選）**：FastAPI + Python，提供 `/translate` 端點
+- **資料庫**：Supabase（PostgreSQL）
+- **翻譯引擎**：[Agnes AI](https://agnes-ai.com) `agnes-2.0-flash` 模型
+  - Android APK 內建 API Key（透過 Vite env 注入），可直接呼叫 Agnes，不依賴 Supabase Edge Function
+  - Web 部署版本亦可選擇走 Supabase Edge Function，把 Key 放在 server 端
+
+## 設定
+
+1. 複製 `.env.example` 為 `.env`，填入你的 Agnes 憑證：
+
+   ```
+   cp .env.example .env
+   ```
+
+   ```env
+   AGNES_API_KEY=sk-xxxxxxxxxxxx
+   AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
+   AGNES_MODEL=agnes-2.0-flash
+
+   VITE_AGNES_API_KEY=sk-xxxxxxxxxxxx
+   VITE_AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
+   VITE_AGNES_MODEL=agnes-2.0-flash
+   ```
+
+   > ⚠️ 注意：實際 base URL 是 `https://apihub.agnes-ai.com/v1`，模型 ID 為小寫 `agnes-2.0-flash`（已驗證可正常呼叫 Chat Completions API）。
+
+2. 後端設定檔位於 `backend/config.py`，使用 `python-dotenv` 讀取 `.env`，並導出 `settings` 物件：
+
+   ```python
+   from config import settings
+   settings.AGNES_API_KEY
+   settings.AGNES_BASE_URL
+   settings.AGNES_MODEL
+   settings.chat_completions_url   # https://apihub.agnes-ai.com/v1/chat/completions
+   ```
+
+3. （可選）若要把 Supabase Edge Function 當作 Web 端的代理，把以下 secrets 設到 Supabase Dashboard → Edge Functions → Secrets：
+   - `AGNES_API_KEY`
+   - `AGNES_BASE_URL`
+   - `AGNES_MODEL`
 
 ## 開發
 
 ```bash
 npm install
-npm run dev
+npm run dev      # 啟動前端開發伺服器
+```
+
+後端：
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+# 健康檢查
+curl http://127.0.0.1:8000/health
+# 翻譯
+curl -X POST http://127.0.0.1:8000/translate \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"這項投資的風險很高。","sourceLang":"zh-TW","targetLang":"en"}'
 ```
 
 ## 建置 APK
 
+### 本地建置
+
 ```bash
 npm run build
 npx cap sync android
-cd android && ./gradlew assembleDebug
+cd android && ./gradlew assembleRelease
 ```
 
-APK 輸出路徑：`android/app/build/outputs/apk/debug/app-debug.apk`
+APK 輸出路徑：`android/app/build/outputs/apk/release/app-release-unsigned.apk`
+
+### 雲端自動建置（推薦）
+
+只要 push 到 `main` 分支，GitHub Actions workflow 會自動：
+1. 用 `AGNES_API_KEY` / `AGNES_BASE_URL` / `AGNES_MODEL` secrets 建置 web bundle
+2. 同步到 Android 專案並執行 `gradlew assembleRelease`
+3. 自動建立 GitHub Release 並上傳 APK
+
+需要在倉庫 Settings → Secrets and variables → Actions 加入：
+- `AGNES_API_KEY`
+- `AGNES_BASE_URL`（值：`https://apihub.agnes-ai.com/v1`）
+- `AGNES_MODEL`（值：`agnes-2.0-flash`）
 
 ## 下載
 

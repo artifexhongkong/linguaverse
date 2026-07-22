@@ -149,7 +149,7 @@ export function TranslatePage({
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              {result.engine === "machine-fallback" ? "機器兜底翻譯" : `Agnes-2.0-Flash 翻譯`} {saved && "· 已儲存"}
+              {result.engine === "machine-fallback" ? "機器兜底翻譯" : `${result.model ?? "agnes-2.0-flash"} 翻譯`} {saved && "· 已儲存"}
             </div>
           </div>
           {result.fallbackNotice && (
