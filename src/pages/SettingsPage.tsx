@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { type UserSettings } from "../lib/supabase";
 import { getLanguage, getContextMode } from "../lib/languages";
 
@@ -10,6 +11,8 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToast }: SettingsPageProps) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [machineFallbackEnabled, setMachineFallbackEnabled] = useState(true);
   const plan = settings?.plan ?? "free";
   const usagePct = Math.min((quotaUsed / quotaLimit) * 100, 100);
   const sourceLang = settings?.default_source_lang ?? "auto";
@@ -85,26 +88,70 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
       <div className="settings-section">
         <div className="settings-section-label">關於</div>
         <div className="settings-card">
-          <div className="settings-row" onClick={() => onToast("LinguaVerse v1.0.0")}>
+          <div className="settings-row" onClick={() => onToast("LinguaVerse v1.2.0")}>
             <div className="settings-row-label">
               <div className="settings-row-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               </div>
-              <div className="settings-row-text"><div className="settings-row-title">版本</div><div className="settings-row-desc">LinguaVerse v1.0.0</div></div>
+              <div className="settings-row-text"><div className="settings-row-title">版本</div><div className="settings-row-desc">LinguaVerse v1.2.0</div></div>
             </div>
             <span className="chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg></span>
           </div>
-          <div className="settings-row" onClick={() => onToast("AI 語境翻譯引擎")}>
+          <div className="settings-row" onClick={() => onToast("AI 智能翻譯引擎")}>
             <div className="settings-row-label">
               <div className="settings-row-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
               </div>
-              <div className="settings-row-text"><div className="settings-row-title">翻譯引擎</div><div className="settings-row-desc">AI 語境感知翻譯 v2</div></div>
+              <div className="settings-row-text"><div className="settings-row-title">翻譯引擎</div><div className="settings-row-desc">AI 智能翻譯（LLM 主通道）</div></div>
             </div>
             <span className="chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg></span>
           </div>
+          <div className="settings-row" onClick={() => setShowAdvanced((v) => !v)}>
+            <div className="settings-row-label">
+              <div className="settings-row-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+              </div>
+              <div className="settings-row-text"><div className="settings-row-title">進階選項</div><div className="settings-row-desc">傳統機器翻譯設定</div></div>
+            </div>
+            <span className="chevron" style={{ transform: showAdvanced ? "rotate(90deg)" : "none", transition: "transform 0.25s var(--ease-out)" }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg></span>
+          </div>
         </div>
       </div>
+
+      {showAdvanced && (
+        <div className="settings-section anim-fade">
+          <div className="settings-section-label">進階 · 傳統機器翻譯</div>
+          <div className="settings-card">
+            <div className="settings-row">
+              <div className="settings-row-label">
+                <div className="settings-row-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                </div>
+                <div className="settings-row-text"><div className="settings-row-title">機器翻譯兜底</div><div className="settings-row-desc">LLM 失敗時自動切換至 Google/DeepL</div></div>
+              </div>
+              <button
+                className={`toggle-switch ${machineFallbackEnabled ? "on" : ""}`}
+                onClick={() => {
+                  const next = !machineFallbackEnabled;
+                  setMachineFallbackEnabled(next);
+                  onToast(next ? "已啟用機器翻譯兜底" : "已停用機器翻譯兜底");
+                }}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+            <div className="settings-row" onClick={() => onToast("目前預設：Google 翻譯")}>
+              <div className="settings-row-label">
+                <div className="settings-row-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" /></svg>
+                </div>
+                <div className="settings-row-text"><div className="settings-row-title">兜底翻譯引擎</div><div className="settings-row-desc">Google 翻譯（預設）</div></div>
+              </div>
+              <span className="chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg></span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

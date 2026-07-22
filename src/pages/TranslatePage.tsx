@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { LANGUAGES, CONTEXT_MODES, getLanguage } from "../lib/languages";
-import { translate, type TranslationResult } from "../lib/translate";
+import { scheduleTranslation, type SchedulerResult } from "../service/translator-scheduler";
 import { insertTranslation, incrementQuota } from "../lib/supabase";
 import { BottomSheet, SheetItem } from "../components/BottomSheet";
 
@@ -20,7 +20,7 @@ export function TranslatePage({
   sourceLang, targetLang, context, onLangChange, onContextChange, onToast, onQuotaUpdate, quotaUsed, quotaLimit,
 }: TranslatePageProps) {
   const [input, setInput] = useState("");
-  const [result, setResult] = useState<TranslationResult | null>(null);
+  const [result, setResult] = useState<SchedulerResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
   const [saved, setSaved] = useState(false);
@@ -35,7 +35,7 @@ export function TranslatePage({
     setResult(null);
     setSaved(false);
     try {
-      const res = await translate(input, sourceLang, targetLang, context);
+      const res = await scheduleTranslation(input, sourceLang, targetLang, context);
       setResult(res);
       await insertTranslation({
         source_text: input.trim(), translated_text: res.text,
@@ -143,15 +143,23 @@ export function TranslatePage({
       </button>
 
       {result && (
-        <div className="result-card anim-up">
+        <div className={`result-card anim-up ${result.engine === "machine-fallback" ? "result-fallback" : ""}`}>
           <div className="result-header">
             <div className="result-label">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              翻譯結果 {saved && "· 已儲存"}
+              {result.engine === "machine-fallback" ? "機器兜底翻譯" : "AI 智能翻譯"} {saved && "· 已儲存"}
             </div>
           </div>
+          {result.fallbackNotice && (
+            <div className="fallback-notice">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
+                <path d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+              </svg>
+              {result.fallbackNotice}
+            </div>
+          )}
           <div className="result-text">{result.text}</div>
           {result.contextNote && (
             <div className="context-note">
