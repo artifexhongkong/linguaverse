@@ -7,7 +7,7 @@ export function Paywall({ onClose, onUpgrade }: PaywallProps) {
   const features = [
     "無限翻譯次數，不再受限額影響",
     "解鎖全部 137 種語言",
-    "6 種語境模式（商務、法律、醫療等）",
+    "更精準的翻譯風格與用詞建議",
     "整份文件翻譯與優先處理",
     "無廣告的純淨體驗",
     "翻譯歷史雲端同步",

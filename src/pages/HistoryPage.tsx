@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchTranslations, toggleFavorite, deleteTranslation, type TranslationRecord } from "../lib/supabase";
-import { getLanguage, getContextMode } from "../lib/languages";
+import { getLanguage } from "../lib/languages";
 
 interface HistoryPageProps {
   refreshKey: number;
@@ -117,7 +117,6 @@ export function HistoryPage({ refreshKey, onToast }: HistoryPageProps) {
           {filtered.map((r, i) => {
             const src = getLanguage(r.source_lang);
             const tgt = getLanguage(r.target_lang);
-            const ctx = getContextMode(r.context_mode);
             return (
               <div key={r.id} className="history-item anim-up" style={{ animationDelay: `${Math.min(i * 0.04, 0.32)}s` }}>
                 <div className="history-item-head">
@@ -129,7 +128,6 @@ export function HistoryPage({ refreshKey, onToast }: HistoryPageProps) {
                     </svg>
                     <span className="lang-flag">{tgt.flag}</span>
                     <span>{tgt.nativeName}</span>
-                    <span className="history-context-tag">{ctx.icon} {ctx.name}</span>
                   </div>
                   <div className="history-actions">
                     <button

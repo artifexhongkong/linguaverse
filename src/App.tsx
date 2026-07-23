@@ -20,7 +20,6 @@ export default function App() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [sourceLang, setSourceLang] = useState("auto");
   const [targetLang, setTargetLang] = useState("en");
-  const [context, setContext] = useState("general");
   const [quotaUsed, setQuotaUsed] = useState(0);
   const [historyRefresh, setHistoryRefresh] = useState(0);
 
@@ -47,7 +46,6 @@ export default function App() {
           setSettings(s);
           setSourceLang(s.default_source_lang);
           setTargetLang(s.default_target_lang);
-          setContext(s.default_context);
           setQuotaUsed(s.monthly_quota_used);
         } else {
           const created = await upsertSettings({
@@ -64,11 +62,6 @@ export default function App() {
     setSourceLang(source);
     setTargetLang(target);
     if (isSupabaseConfigured) upsertSettings({ default_source_lang: source, default_target_lang: target }).catch(() => {});
-  };
-
-  const handleContextChange = (ctx: string) => {
-    setContext(ctx);
-    if (isSupabaseConfigured) upsertSettings({ default_context: ctx }).catch(() => {});
   };
 
   const handleQuotaUpdate = () => {
@@ -104,11 +97,7 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <div className="header-logo">译</div>
-          <div className="header-name">
-            <b>译境 LinguaVerse</b>
-            <span>AI 語境翻譯</span>
-          </div>
+          <b>译境 LinguaVerse</b>
         </div>
         <button className="header-plan-badge" onClick={() => setShowPricing(true)}>
           {plan === "free" ? "FREE" : plan === "pro" ? "PRO" : "ENTERPRISE"}
@@ -118,8 +107,8 @@ export default function App() {
       <main className="app-content">
         {tab === "translate" && (
           <TranslatePage
-            sourceLang={sourceLang} targetLang={targetLang} context={context}
-            onLangChange={handleLangChange} onContextChange={handleContextChange}
+            sourceLang={sourceLang} targetLang={targetLang}
+            onLangChange={handleLangChange}
             onToast={showToast} onQuotaUpdate={handleQuotaUpdate}
             quotaUsed={quotaUsed} quotaLimit={quotaLimit}
           />

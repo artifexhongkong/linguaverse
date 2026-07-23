@@ -1,5 +1,5 @@
 import { type UserSettings } from "../lib/supabase";
-import { getLanguage, getContextMode } from "../lib/languages";
+import { getLanguage } from "../lib/languages";
 
 interface SettingsPageProps {
   settings: UserSettings | null;
@@ -16,11 +16,9 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
   const usagePct = Math.min((quotaUsed / quotaLimit) * 100, 100);
   const sourceLang = settings?.default_source_lang ?? "auto";
   const targetLang = settings?.default_target_lang ?? "en";
-  const context = settings?.default_context ?? "general";
 
   const src = getLanguage(sourceLang);
   const tgt = getLanguage(targetLang);
-  const ctx = getContextMode(context);
   const planLabel = plan === "free" ? "免費方案" : plan === "pro" ? "Pro 方案" : "Enterprise 方案";
   const planBadge = plan === "free" ? "FREE" : plan === "pro" ? "PRO" : "ENTERPRISE";
 
@@ -49,7 +47,7 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
       </div>
 
       <div className="settings-section">
-        <div className="section-label">預設語言與語境</div>
+        <div className="section-label">預設語言</div>
         <div className="settings-card">
           <div className="settings-row" onClick={() => onToast("於翻譯頁面切換語言即可更新預設值")}>
             <div className="row-label">
@@ -59,15 +57,6 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
               <div className="row-text"><div className="row-title">預設語言組</div><div className="row-desc">翻譯頁面開啟時的來源與目標</div></div>
             </div>
             <div className="row-value">{src.flag} {src.nativeName} → {tgt.flag} {tgt.nativeName}</div>
-          </div>
-          <div className="settings-row" onClick={() => onToast("於翻譯頁面切換語境即可更新預設值")}>
-            <div className="row-label">
-              <div className="row-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              </div>
-              <div className="row-text"><div className="row-title">預設語境模式</div><div className="row-desc">翻譯時套用的語境風格</div></div>
-            </div>
-            <div className="row-value">{ctx.icon} {ctx.name}</div>
           </div>
         </div>
       </div>
@@ -98,7 +87,7 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
 
       <div className="about-foot">
         <b>译境 LinguaVerse</b><br />
-        AI 語境翻譯 · 讓每句話都恰到好處
+        AI 智能翻譯 · 讓每句話都恰到好處
       </div>
     </div>
   );

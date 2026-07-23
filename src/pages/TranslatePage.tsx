@@ -1,15 +1,13 @@
 import { useState } from "react";
-import { LANGUAGES, CONTEXT_MODES, getLanguage, getContextMode } from "../lib/languages";
-import { scheduleTranslation, type TranslationOutput } from "../service/translator-scheduler";
+import { LANGUAGES, getLanguage } from "../lib/languages";
+import { scheduleTranslationStream, type TranslationOutput } from "../service/translator-scheduler";
 import { insertTranslation, incrementQuota } from "../lib/supabase";
 import { BottomSheet, SheetItem } from "../components/BottomSheet";
 
 interface TranslatePageProps {
   sourceLang: string;
   targetLang: string;
-  context: string;
   onLangChange: (source: string, target: string) => void;
-  onContextChange: (context: string) => void;
   onToast: (msg: string) => void;
   onQuotaUpdate: () => void;
   quotaUsed: number;
@@ -17,10 +15,11 @@ interface TranslatePageProps {
 }
 
 export function TranslatePage({
-  sourceLang, targetLang, context, onLangChange, onContextChange, onToast, onQuotaUpdate, quotaUsed, quotaLimit,
+  sourceLang, targetLang, onLangChange, onToast, onQuotaUpdate, quotaUsed, quotaLimit,
 }: TranslatePageProps) {
   const [input, setInput] = useState("");
   const [result, setResult] = useState<TranslationOutput | null>(null);
+  const [streamingText, setStreamingText] = useState("");
   const [loading, setLoading] = useState(false);
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
   const [copied, setCopied] = useState(false);
@@ -29,22 +28,26 @@ export function TranslatePage({
   const charLimit = 500;
   const remaining = Math.max(quotaLimit - quotaUsed, 0);
   const canTranslate = input.trim().length > 0 && !loading && remaining > 0;
-  const ctxMode = getContextMode(context);
 
   const handleTranslate = async () => {
     if (!canTranslate) return;
     setLoading(true);
     setResult(null);
+    setStreamingText("");
     setSaved(false);
     try {
-      const res = await scheduleTranslation(input, sourceLang, targetLang, context);
+      const res = await scheduleTranslationStream(
+        input, sourceLang, targetLang, "general",
+        (_delta, fullSoFar) => setStreamingText(fullSoFar),
+      );
       setResult(res);
+      setStreamingText("");
       await insertTranslation({
         source_text: input.trim(),
         translated_text: res.text,
         source_lang: res.detectedLang ?? sourceLang,
         target_lang: targetLang,
-        context_mode: context,
+        context_mode: "general",
         confidence: 0.95,
       });
       await incrementQuota(1);
@@ -77,10 +80,10 @@ export function TranslatePage({
   };
 
   const handleClear = () => {
-    setInput(""); setResult(null); setSaved(false); setCopied(false);
+    setInput(""); setResult(null); setStreamingText(""); setSaved(false); setCopied(false);
   };
 
-  const displayText = result ? result.text : "";
+  const displayText = result ? result.text : (loading && streamingText ? streamingText : "");
 
   return (
     <div className="page translate-page">
@@ -104,22 +107,6 @@ export function TranslatePage({
             <span className="lang-name">{getLanguage(targetLang).nativeName}</span>
           </span>
         </button>
-      </div>
-
-      <div className="context-section">
-        <div className="section-label">語境模式</div>
-        <div className="context-chips">
-          {CONTEXT_MODES.map((c) => (
-            <button
-              key={c.code}
-              className={`context-chip ${context === c.code ? "active" : ""}`}
-              onClick={() => onContextChange(c.code)}
-            >
-              <span className="context-chip-icon">{c.icon}</span>
-              {c.name}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="input-card">
@@ -155,7 +142,7 @@ export function TranslatePage({
       >
         {loading ? (
           <>
-            語境分析中
+            翻譯中
             <span className="btn-dots"><span /><span /><span /></span>
           </>
         ) : (
@@ -175,7 +162,7 @@ export function TranslatePage({
         <div className="quota-hint">本月配額已用完，升級 Pro 享受無限翻譯</div>
       )}
 
-      {loading && (
+      {loading && !streamingText && (
         <div className="result-card anim-up">
           <div className="result-head">
             <div className="result-label">
@@ -193,16 +180,16 @@ export function TranslatePage({
         </div>
       )}
 
-      {result && !loading && (
+      {(result || streamingText) && (
         <div className="result-card anim-up">
           <div className="result-head">
             <div className="result-label">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              翻譯結果
+              翻譯結果{loading && <span className="streaming-cursor">▍</span>}
             </div>
-            <button className={`copy-btn ${copied ? "copied" : ""}`} onClick={handleCopy} aria-label="複製譯文">
+            <button className={`copy-btn ${copied ? "copied" : ""}`} onClick={handleCopy} aria-label="複製譯文" disabled={loading}>
               {copied ? (
                 <>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -224,20 +211,16 @@ export function TranslatePage({
 
           <div className="result-text">{displayText}</div>
 
-          <div className="result-meta">
-            <span className="result-tag">
-              <span className="result-tag-icon">{ctxMode.icon}</span>
-              {ctxMode.name}模式
-            </span>
-            {saved && (
+          {saved && (
+            <div className="result-meta">
               <span className="result-saved">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 13l4 4L19 7" />
                 </svg>
                 已儲存
               </span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
 

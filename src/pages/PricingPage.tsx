@@ -8,12 +8,12 @@ export function PricingPage({ onUpgrade, currentPlan }: PricingPageProps) {
     {
       name: "Free", price: "$0", period: "免費", featured: false, plan: "free",
       cta: "目前方案",
-      features: ["每月 30 次翻譯", "20 種常用語言", "通用語境模式", "翻譯歷史記錄"],
+      features: ["每月 30 次翻譯", "20 種常用語言", "即時雙向翻譯", "翻譯歷史記錄"],
     },
     {
       name: "Pro", price: "$9.99", period: "/ 月", featured: true, plan: "pro",
       cta: "升級 Pro",
-      features: ["無限翻譯次數", "全部 137 種語言", "6 種語境模式", "整份文件翻譯", "優先翻譯佇列", "無廣告體驗"],
+      features: ["無限翻譯次數", "全部 137 種語言", "進階翻譯風格與用詞建議", "整份文件翻譯", "優先翻譯佇列", "無廣告體驗"],
     },
     {
       name: "Enterprise", price: "洽談", period: "客製化", featured: false, plan: "enterprise",

@@ -1,21 +1,20 @@
-import { createClient } from "@supabase/supabase-js";
+/**
+ * Local-first persistence layer for 译境 LinguaVerse.
+ *
+ * This module previously wrapped Supabase; it now uses localStorage so the
+ * Android APK works out-of-the-box without any backend configuration.
+ * The exported function signatures are unchanged so all callers (App.tsx,
+ * TranslatePage, HistoryPage, SettingsPage) keep working untouched.
+ *
+ * If you later want to sync to a backend, swap the bodies of these
+ * functions — the contracts stay the same.
+ */
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const TRANSLATIONS_KEY = "linguaverse.translations.v1";
+const SETTINGS_KEY = "linguaverse.settings.v1";
+const MAX_HISTORY = 200;
 
-export const supabase = createClient(
-  supabaseUrl || "https://placeholder.supabase.co",
-  supabaseAnonKey || "placeholder-anon-key",
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  },
-);
-
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+export const isSupabaseConfigured = true; // always true — we are local-first now
 
 export interface TranslationRecord {
   id: string;
@@ -40,157 +39,111 @@ export interface UserSettings {
   created_at: string;
 }
 
+function readTranslations(): TranslationRecord[] {
+  try {
+    const raw = localStorage.getItem(TRANSLATIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeTranslations(list: TranslationRecord[]): void {
+  try {
+    // Keep only the most recent MAX_HISTORY records to avoid unbounded growth.
+    const trimmed = list.slice(0, MAX_HISTORY);
+    localStorage.setItem(TRANSLATIONS_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Quota exceeded — drop oldest and retry once.
+    try {
+      localStorage.setItem(TRANSLATIONS_KEY, JSON.stringify(list.slice(0, 50)));
+    } catch { /* give up silently */ }
+  }
+}
+
+function readSettings(): UserSettings | null {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as UserSettings;
+  } catch {
+    return null;
+  }
+}
+
+function writeSettings(s: UserSettings): void {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch { /* ignore */ }
+}
+
+function uid(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
 export async function fetchTranslations(): Promise<TranslationRecord[]> {
-  if (!isSupabaseConfigured) return [];
-  const { data, error } = await supabase
-    .from("translations")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(100);
-  if (error) throw error;
-  return (data ?? []) as TranslationRecord[];
+  return readTranslations().sort((a, b) =>
+    b.created_at.localeCompare(a.created_at)
+  );
 }
 
 export async function insertTranslation(
   record: Omit<TranslationRecord, "id" | "created_at" | "is_favorite">
 ): Promise<TranslationRecord | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await supabase
-    .from("translations")
-    .insert(record)
-    .select()
-    .maybeSingle();
-  if (error) throw error;
-  return data as TranslationRecord | null;
+  const list = readTranslations();
+  const newRow: TranslationRecord = {
+    id: uid(),
+    created_at: new Date().toISOString(),
+    is_favorite: false,
+    ...record,
+  };
+  list.unshift(newRow);
+  writeTranslations(list);
+  return newRow;
 }
 
 export async function toggleFavorite(id: string, fav: boolean): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  const { error } = await supabase
-    .from("translations")
-    .update({ is_favorite: fav })
-    .eq("id", id);
-  if (error) throw error;
+  const list = readTranslations();
+  const idx = list.findIndex((r) => r.id === id);
+  if (idx >= 0) {
+    list[idx].is_favorite = fav;
+    writeTranslations(list);
+  }
 }
 
 export async function deleteTranslation(id: string): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  const { error } = await supabase.from("translations").delete().eq("id", id);
-  if (error) throw error;
+  const list = readTranslations();
+  writeTranslations(list.filter((r) => r.id !== id));
 }
 
 export async function fetchSettings(): Promise<UserSettings | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await supabase
-    .from("user_settings")
-    .select("*")
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return data as UserSettings | null;
+  return readSettings();
 }
 
 export async function upsertSettings(
-  settings: Partial<UserSettings>
+  updates: Partial<UserSettings>
 ): Promise<UserSettings | null> {
-  if (!isSupabaseConfigured) return null;
-  const existing = await fetchSettings();
-  if (existing) {
-    const { data, error } = await supabase
-      .from("user_settings")
-      .update(settings)
-      .eq("id", existing.id)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    return data as UserSettings | null;
-  } else {
-    const { data, error } = await supabase
-      .from("user_settings")
-      .insert(settings)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    return data as UserSettings | null;
-  }
+  const existing = readSettings();
+  const merged: UserSettings = existing ?? {
+    id: uid(),
+    default_source_lang: "auto",
+    default_target_lang: "en",
+    default_context: "general",
+    plan: "free",
+    monthly_quota_used: 0,
+    quota_reset_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+    created_at: new Date().toISOString(),
+  };
+  Object.assign(merged, updates);
+  writeSettings(merged);
+  return merged;
 }
 
 export async function incrementQuota(used: number): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  const existing = await fetchSettings();
-  if (existing) {
-    await supabase
-      .from("user_settings")
-      .update({ monthly_quota_used: existing.monthly_quota_used + used })
-      .eq("id", existing.id);
-  }
-}
-
-export interface CustomPromptRecord {
-  id: string;
-  name: string;
-  domain: string;
-  base_override: string | null;
-  domain_override: string | null;
-  style_override: string | null;
-  output_override: string | null;
-  terminology: Record<string, string> | null;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export async function fetchCustomPrompts(): Promise<CustomPromptRecord[]> {
-  if (!isSupabaseConfigured) return [];
-  const { data, error } = await supabase
-    .from("custom_prompts")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as CustomPromptRecord[];
-}
-
-export async function insertCustomPrompt(
-  record: Omit<CustomPromptRecord, "id" | "created_at" | "updated_at">
-): Promise<CustomPromptRecord | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await supabase
-    .from("custom_prompts")
-    .insert(record)
-    .select()
-    .maybeSingle();
-  if (error) throw error;
-  return data as CustomPromptRecord | null;
-}
-
-export async function updateCustomPrompt(
-  id: string,
-  updates: Partial<CustomPromptRecord>
-): Promise<CustomPromptRecord | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await supabase
-    .from("custom_prompts")
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .maybeSingle();
-  if (error) throw error;
-  return data as CustomPromptRecord | null;
-}
-
-export async function deleteCustomPrompt(id: string): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  const { error } = await supabase.from("custom_prompts").delete().eq("id", id);
-  if (error) throw error;
-}
-
-export async function setActivePrompt(id: string, active: boolean): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  if (active) {
-    await supabase.from("custom_prompts").update({ is_active: false }).neq("id", id);
-  }
-  await supabase
-    .from("custom_prompts")
-    .update({ is_active: active, updated_at: new Date().toISOString() })
-    .eq("id", id);
+  const s = readSettings();
+  if (!s) return;
+  s.monthly_quota_used += used;
+  writeSettings(s);
 }
