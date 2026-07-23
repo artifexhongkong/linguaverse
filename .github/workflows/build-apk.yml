@@ -4,21 +4,20 @@ name: Build & Release APK
 # LinguaVerse — Android APK build & release pipeline
 # ------------------------------------------------------------
 # Triggers:
-#   • push to main     → builds a debug-signed APK and publishes
-#                        it as a "Pre-release" tagged with the
-#                        short commit SHA.
-#   • workflow_dispatch → manual run; prompts for a tag name and
-#                          whether it should be marked as latest.
-#   • tag v*            → builds a release-signed APK (if signing
-#                          secrets are present) and publishes it
-#                          as a stable Release tied to that tag.
+#   • push to main     → nightly pre-release tagged nightly-<sha>
+#   • tag v*           → stable release tied to the tag
+#   • workflow_dispatch → manual run with custom tag + pre-release toggle
 #
-# Signing:
-#   If the ANDROID_KEYSTORE_BASE64 / KEYSTORE_PASSWORD /
-#   KEY_ALIAS / KEY_PASSWORD secrets are set, the APK is signed
-#   with that keystore. Otherwise, the APK is built unsigned
-#   (debug-signed fallback) and uploaded anyway — useful for
-#   internal testing before a real release key exists.
+# Secrets required (Settings → Secrets and variables → Actions):
+#   Translation (baked into the APK at Vite build time):
+#     AGNES_API_KEY, AGNES_BASE_URL, AGNES_MODEL
+#   Voice / STT (optional — either backend or direct mode):
+#     VITE_STT_BACKEND_URL  (preferred — backend holds Whisper key)
+#     OR
+#     VITE_STT_API_KEY + VITE_STT_BASE_URL (+ optional VITE_STT_MODEL)
+#   APK signing:
+#     ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+#     ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
 # ============================================================
 
 on:
@@ -54,8 +53,23 @@ jobs:
       # ---------- 1. Checkout ----------
       - name: 📥 Checkout source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # ---------- 2. Node + npm cache ----------
+      # ---------- 2. Setup JDK (needed before Android SDK) ----------
+      - name: ☕ Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ---------- 3. Setup Android SDK ----------
+      - name: 📱 Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      # ---------- 4. Node + npm cache ----------
       - name: 🟢 Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -63,31 +77,91 @@ jobs:
           cache: 'npm'
 
       - name: 📦 Install dependencies
-        run: npm ci || npm install
+        run: npm install --no-audit --no-fund
 
-      # ---------- 3. Build the web bundle (Vite) ----------
+      # ---------- 5. Build the web bundle (Vite) ----------
+      # Injects AGNES_* and STT_* credentials so they're baked into the
+      # JS bundle at build time. The APK calls Agnes directly — no backend
+      # needed for translation.
       - name: 🏗️ Build web bundle (Vite)
-        run: npm run build
         env:
-          # Optional — if VITE_STT_BACKEND_URL is configured as a
-          # repo secret, the APK will ship with the production STT
-          # endpoint baked in. Leave empty to use direct mode.
+          # Translation engine — required. Without these, every translate
+          # call throws "翻譯服務暫時無法使用".
+          VITE_AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
+          VITE_AGNES_BASE_URL: ${{ secrets.AGNES_BASE_URL }}
+          VITE_AGNES_MODEL: ${{ secrets.AGNES_MODEL }}
+          # Voice / STT — backend proxy mode (preferred) OR direct mode.
+          # If neither is set, the mic button shows "語音識別未配置".
           VITE_STT_BACKEND_URL: ${{ secrets.VITE_STT_BACKEND_URL }}
           VITE_STT_API_KEY: ${{ secrets.VITE_STT_API_KEY }}
           VITE_STT_BASE_URL: ${{ secrets.VITE_STT_BASE_URL }}
           VITE_STT_MODEL: ${{ secrets.VITE_STT_MODEL }}
+          # Supabase (optional — for history & quota; works without on APK).
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
 
-      # ---------- 4. Sync web bundle into the Android project ----------
+      # ---------- 6. Sanity-check the freshly built bundle ----------
+      # Fail early (before the slow Gradle build) if Agnes credentials
+      # didn't make it into the bundle.
+      - name: 🔍 Sanity-check web bundle
+        run: |
+          set -e
+          echo "=== dist files ==="
+          ls -la dist/assets/
+          echo ""
+          echo "=== Verify Agnes URL is baked in ==="
+          grep -c 'apihub.agnes-ai.com' dist/assets/*.js \
+            || (echo "::error::apihub.agnes-ai.com missing from bundle — AGNES_BASE_URL secret not set?" && exit 1)
+          echo "=== Verify API key prefix is baked in ==="
+          grep -c 'sk-' dist/assets/*.js \
+            || (echo "::error::API key missing from bundle — AGNES_API_KEY secret not set?" && exit 1)
+          echo "=== Verify model name is baked in ==="
+          grep -c 'agnes-2.0-flash' dist/assets/*.js \
+            || (echo "::error::model name missing from bundle — AGNES_MODEL secret not set?" && exit 1)
+          echo "=== STT configuration check ==="
+          if grep -q 'VITE_STT_BACKEND_URL\|isSTTConfigured' dist/assets/*.js; then
+            echo "STT client code present in bundle"
+            if [ -n "${{ secrets.VITE_STT_BACKEND_URL }}" ] || [ -n "${{ secrets.VITE_STT_API_KEY }}" ]; then
+              echo "STT secret detected — verifying it's in the bundle..."
+              # The stt-client.ts reads import.meta.env.VITE_STT_BACKEND_URL at runtime,
+              # so the actual URL string should appear in the bundle if the secret was set.
+              if grep -q 'https://api' dist/assets/*.js; then
+                echo "STT endpoint URL found in bundle ✅"
+              else
+                echo "::warning::STT secret set but no URL pattern found in bundle — verify VITE_STT_* env vars"
+              fi
+            else
+              echo "::notice::No STT secrets configured — voice input button will show '語音識別未配置' in the APK"
+            fi
+          fi
+          echo "=== ALL BUNDLE CHECKS PASSED ==="
+
+      # ---------- 7. Clean & sync to Android project ----------
+      - name: 🧹 Clean Capacitor Android assets
+        run: |
+          rm -rf android/app/src/main/assets/public
+          rm -rf android/app/build
+          rm -rf android/build
+          rm -rf android/.gradle
+          npx cap clean android || true
+
       - name: 🔄 Capacitor sync
         run: npx cap sync android
 
-      # ---------- 5. Decode signing keystore (if all 4 secrets are set) ----------
-      # Secret names match what's configured in the repo:
-      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
-      #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-      # If any are missing, we skip signing and produce an unsigned APK.
+      - name: ✅ Verify synced assets
+        run: |
+          echo "=== Synced assets ==="
+          ls -la android/app/src/main/assets/public/assets/
+          echo ""
+          echo "=== Verify bundle in android assets is the new one ==="
+          grep -c 'apihub.agnes-ai.com' android/app/src/main/assets/public/assets/*.js
+          grep -c 'agnes-2.0-flash' android/app/src/main/assets/public/assets/*.js
+
+      # ---------- 8. Decode signing keystore ----------
+      # Reads ANDROID_KEYSTORE_BASE64 + ANDROID_KEYSTORE_PASSWORD +
+      # ANDROID_KEY_ALIAS + ANDROID_KEY_PASSWORD. If any are missing,
+      # we skip signing and produce an unsigned APK.
       - name: 🔑 Decode signing keystore
         id: keystore
         env:
@@ -114,14 +188,7 @@ jobs:
           echo "KEY_PASSWORD=$KS_KEY_PASS" >> $GITHUB_ENV
           echo "signed=true" >> $GITHUB_OUTPUT
 
-      # ---------- 6. Setup JDK ----------
-      - name: ☕ Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      # ---------- 7. Gradle cache ----------
+      # ---------- 9. Gradle cache ----------
       - name: 💾 Cache Gradle
         uses: actions/cache@v4
         with:
@@ -131,15 +198,53 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      # ---------- 8. Build the release APK ----------
+      # ---------- 10. Build the release APK ----------
       - name: 📲 Assemble APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        run: ./gradlew clean assembleRelease --no-daemon --stacktrace
 
-      # ---------- 9. Resolve the tag name for this release ----------
+      # ---------- 11. Verify APK is signed (if we expected it to be) ----------
+      - name: 🔏 Verify APK signature
+        if: steps.keystore.outputs.signed == 'true'
+        run: |
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
+          echo "APK: $APK"
+          case "$APK" in
+            *-unsigned.apk) echo "::error::APK is still unsigned despite signing secrets being set!"; exit 1;;
+          esac
+          SDKMANAGER_BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          APKSIGNER="$SDKMANAGER_BUILD_TOOLS/apksigner"
+          echo "Using apksigner: $APKSIGNER"
+          $APKSIGNER verify --verbose "$APK" 2>&1 | head -10
+          unzip -l "$APK" | grep -E "META-INF/.*(RSA|SF|MF)" \
+            || (echo "::error::APK has no signing files!" && exit 1)
+
+      # ---------- 12. Verify APK contents before release ----------
+      - name: 📦 Verify APK contents
+        run: |
+          set -e
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
+          mkdir -p /tmp/apk_verify
+          unzip -o "$APK" -d /tmp/apk_verify > /dev/null
+          echo "=== APK assets ==="
+          ls /tmp/apk_verify/assets/public/assets/
+          echo ""
+          echo "=== Verify APK bundle has the translation endpoint ==="
+          grep -c 'apihub.agnes-ai.com' /tmp/apk_verify/assets/public/assets/*.js \
+            || (echo "::error::APK missing translation endpoint!" && exit 1)
+          echo "=== Verify APK bundle has the model name ==="
+          grep -c 'agnes-2.0-flash' /tmp/apk_verify/assets/public/assets/*.js \
+            || (echo "::error::APK missing model name!" && exit 1)
+          echo "=== Verify app name & package ==="
+          (cd /tmp/apk_verify && "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$OLDPWD/$APK" 2>/dev/null | grep -E "application-label|package")
+          echo "=== ALL APK CHECKS PASSED ==="
+
+      # ---------- 13. Resolve the tag name for this release ----------
       - name: 🏷️ Compute release tag
         id: tag
         run: |
+          # Pull versionName from build.gradle so the APK filename matches what's inside.
+          VERSION_NAME=$(grep -E '^\s*versionName' android/app/build.gradle | head -1 | sed -E 's/.*versionName "([^"]+)".*/\1/')
           if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
@@ -147,28 +252,27 @@ jobs:
             echo "name=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
             echo "prerelease=${{ inputs.is_prerelease }}" >> $GITHUB_OUTPUT
           else
-            # push to main → nightly-style tag
+            # push to main → tag with version + short SHA (e.g. v1.0.1-abc1234)
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "name=nightly-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "name=v${VERSION_NAME}-${SHORT_SHA}" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
           fi
+          echo "version=${VERSION_NAME}" >> $GITHUB_OUTPUT
 
-      # ---------- 10. Stage APK with a clean filename ----------
+      # ---------- 14. Stage APK with a clean filename ----------
       - name: 📝 Stage APK artifact
         run: |
           mkdir -p staging
-          SRC="android/app/build/outputs/apk/release/app-release.apk"
-          [ -f "$SRC" ] || SRC="android/app/build/outputs/apk/release/app-release-unsigned.apk"
-          [ -f "$SRC" ] || SRC="android/app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$SRC" ]; then
-            echo "No APK found at any expected path"; exit 1
+          SRC=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "::error::No APK found"; exit 1
           fi
-          DST="staging/LinguaVerse-${{ steps.tag.outputs.name }}.apk"
+          DST="staging/linguaverse-${{ steps.tag.outputs.version }}-${GITHUB_SHA::7}.apk"
           cp "$SRC" "$DST"
           echo "APK_PATH=$DST" >> $GITHUB_ENV
           ls -la staging/
 
-      # ---------- 11. Upload APK as a workflow artifact ----------
+      # ---------- 15. Upload APK as a workflow artifact ----------
       - name: 📤 Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -177,24 +281,25 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---------- 12. Publish to GitHub Releases ----------
+      # ---------- 16. Publish to GitHub Releases ----------
       - name: 🚀 Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
-          name: LinguaVerse ${{ steps.tag.outputs.name }}
+          name: 译境 LinguaVerse ${{ steps.tag.outputs.version }}
           files: staging/*.apk
           prerelease: ${{ steps.tag.outputs.prerelease }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
-            ## LinguaVerse ${{ steps.tag.outputs.name }}
+            ## 译境 LinguaVerse ${{ steps.tag.outputs.version }}
 
             **Build source:** `${{ github.ref_name }}` @ ${{ github.sha }}
 
             ### What's inside
             - Android APK (Capacitor 6 + Vite + React 18)
-            - Voice input (MediaRecorder → `/api/v1/stt` → textarea)
+            - Translation: direct Agnes `agnes-2.0-flash` call (key baked in)
+            - Voice input: MediaRecorder → `/api/v1/stt` → textarea
             - Industrial-minimalist UI
 
             ### Installation

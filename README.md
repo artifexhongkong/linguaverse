@@ -108,8 +108,9 @@ APK 輸出路徑：`android/app/build/outputs/apk/release/app-release-unsigned.a
 - `VITE_SUPABASE_URL`（可選，配額與歷史紀錄功能）
 - `VITE_SUPABASE_ANON_KEY`（可選）
 
-**語音輸入（STT）— 二選一**
-- 後端代理模式（推薦）：`VITE_STT_BACKEND_URL` 指向你的 FastAPI `/api/v1/stt`，後端持有 Whisper key
+**語音輸入（STT）— 三選一**
+- **自動 fallback（推薦，零設定）**：若未設定任何 `VITE_STT_*` 變數，APK 會自動使用 Agnes gateway + Agnes API key 進行 STT（Agnes 暴露了 OpenAI 相容的 `/audio/transcriptions` 端點）。只需設定 `AGNES_*` secrets 即可同時啟用翻譯 + 語音。
+- 後端代理模式：`VITE_STT_BACKEND_URL` 指向你的 FastAPI `/api/v1/stt`，後端持有 Whisper key
 - 直連模式：`VITE_STT_API_KEY` + `VITE_STT_BASE_URL`（可選 `VITE_STT_MODEL`，預設 `whisper-1`）
 
 **APK 簽署**
