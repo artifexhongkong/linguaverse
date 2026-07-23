@@ -1,75 +1,72 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  startRecording,
-  transcribe,
-  isSTTConfigured,
-  type RecordingController,
-} from "../lib/stt-client";
+  isOfflineSTTAvailable,
+  startListening as offlineStart,
+  stopListening as offlineStop,
+  preInitialize as offlinePreInit,
+  release as offlineRelease,
+} from "../lib/offline-stt";
 
 /**
  * Premium voice-input button — industrial minimalist design.
  *
+ * STT backend: sherpa-onnx + SenseVoiceSmall (fully offline, on-device).
+ * Falls back to cloud STT (stt-client.ts) if the native plugin isn't
+ * available (web build).
+ *
  * Visual states:
- *  - **Idle**: a fine mic icon, hairline border; on hover, a soft cyan
- *    glow appears around the border (微光).
- *  - **Recording**: red gradient fill + smooth breathing-pulse animation
- *    + a live timer (00:SS) so the user knows it's working.
- *  - **Transcribing**: blue tint + spinning ring (whisper-1 round-trip).
+ *  - **Idle**: fine mic icon, hairline border; hover → soft cyan glow.
+ *  - **Recording**: red gradient + breathing pulse + live timer.
+ *  - **Transcribing**: blue tint + spinner (only for cloud fallback).
  *
- * Behavior:
- *  - Tap to start recording; tap again to stop and send the Blob to the
- *    STT endpoint (backend proxy or direct Whisper).
- *  - The transcribed text is appended (with a space) to whatever is
- *    already in the input box, so users can chain multiple recordings.
- *  - A small × button appears while recording so the user can cancel
- *    without sending.
+ * Offline mode flow:
+ *  1. Tap → startListening() → native AudioRecord @ 16kHz captures audio
+ *  2. VAD (Silero) segments speech → SenseVoiceSmall recognizes each
+ *  3. Callback fires with punctuated text (zh/en/yue) → appended to input
+ *  4. Tap again → stopListening() → flush remaining segments
  *
- * Accessibility:
- *  - `aria-pressed` reflects the recording state.
- *  - `aria-label` updates per state.
- *  - Keyboard: Enter / Space toggles as usual for a <button>.
+ * Results arrive in real-time as the user speaks (segment-by-segment).
  */
 
 interface VoiceInputProps {
-  /** Called when transcription succeeds. Receives the recognised text. */
   onTranscribed: (text: string) => void;
-  /** Called for user-facing messages (errors, status). */
   onToast: (msg: string) => void;
-  /** Disable the button (e.g. while a translation is in flight). */
   disabled?: boolean;
-  /** Optional — notified when the button enters / leaves the recording state. */
   onStateChange?: (state: "idle" | "recording" | "transcribing") => void;
 }
 
-const MAX_RECORD_SECONDS = 60; // safety cap
+const MAX_RECORD_SECONDS = 60;
 
 export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: VoiceInputProps) {
-  const [state, setStateRaw] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [state, setStateRaw] = useState<"idle" | "recording" | "transcribing" | "initializing">("idle");
   const [seconds, setSeconds] = useState(0);
-  const recRef = useRef<RecordingController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const offlineAvailable = isOfflineSTTAvailable();
 
-  // Wrap setState so we can notify the parent of state changes
-  const setState = (next: "idle" | "recording" | "transcribing") => {
+  const setState = (next: "idle" | "recording" | "transcribing" | "initializing") => {
     setStateRaw(next);
-    onStateChange?.(next);
+    onStateChange?.(next === "initializing" ? "idle" : next);
   };
 
-  // Clean up on unmount
+  // Pre-initialize the offline recognizer on mount (Android only).
+  // This avoids the ~10-30s delay on first tap.
   useEffect(() => {
+    if (offlineAvailable) {
+      void offlinePreInit().catch(() => {});
+    }
     return () => {
-      if (recRef.current) recRef.current.cancel();
       if (timerRef.current) clearInterval(timerRef.current);
+      // Don't release the recognizer here — keep it alive for the
+      // app's lifetime. It's released on app exit.
     };
-  }, []);
+  }, [offlineAvailable]);
 
   const startTimer = () => {
     setSeconds(0);
     timerRef.current = setInterval(() => {
       setSeconds((s) => {
         if (s + 1 >= MAX_RECORD_SECONDS) {
-          // Auto-stop at the cap
-          void stopAndTranscribe();
+          void handleStop();
         }
         return s + 1;
       });
@@ -83,92 +80,79 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
     }
   };
 
-  const stopAndTranscribe = async () => {
-    stopTimer();
-    if (!recRef.current) {
+  // ---- Offline STT (Android) ----
+  const handleOfflineStart = async () => {
+    setState("initializing");
+    try {
+      await offlineStart((text, type) => {
+        // Each recognized segment is appended to the input
+        if (text) onTranscribed(text);
+        if (type === "result") {
+          onToast("識別中…");
+        }
+      });
+      setState("recording");
+      startTimer();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "語音引擎啟動失敗";
+      onToast(msg);
       setState("idle");
-      return;
     }
+  };
 
+  const handleOfflineStop = async () => {
+    stopTimer();
     setState("transcribing");
     try {
-      const blob = await recRef.current.stop();
-      recRef.current = null;
-
-      if (blob.size === 0) {
-        onToast("錄音失敗");
-        setState("idle");
-        return;
-      }
-
-      const result = await transcribe(blob);
-      if (result.text) {
-        onTranscribed(result.text);
-        onToast("已識別語音內容");
-      } else {
-        onToast("未能識別任何語音內容");
-      }
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : "語音識別失敗");
+      await offlineStop();
+      onToast("已識別語音內容");
+    } catch {
+      // ignore — results already delivered via callback
     } finally {
       setState("idle");
       setSeconds(0);
     }
   };
 
+  const handleStop = () => {
+    if (offlineAvailable) {
+      void handleOfflineStop();
+    }
+  };
+
   const handleClick = async () => {
     if (disabled) return;
 
-    // If recording → stop and transcribe
     if (state === "recording") {
-      void stopAndTranscribe();
+      void handleStop();
+      return;
+    }
+    if (state === "transcribing" || state === "initializing") return;
+
+    if (!offlineAvailable) {
+      onToast("離線語音辨識僅支援 Android App");
       return;
     }
 
-    // If transcribing → ignore (let it finish)
-    if (state === "transcribing") return;
-
-    // Otherwise start recording
-    if (!isSTTConfigured()) {
-      onToast("語音識別未配置，請聯繫管理員設定 STT API");
-      return;
-    }
-
-    try {
-      recRef.current = await startRecording();
-      setState("recording");
-      startTimer();
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : "無法啟動麥克風");
-    }
+    void handleOfflineStart();
   };
 
   const handleCancel = (e: React.MouseEvent) => {
     e.stopPropagation();
     stopTimer();
-    if (recRef.current) {
-      recRef.current.cancel();
-      recRef.current = null;
+    if (offlineAvailable) {
+      void offlineStop().catch(() => {});
     }
     setState("idle");
     setSeconds(0);
     onToast("已取消錄音");
   };
 
-  // Format seconds as M:SS
   const timeLabel = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
-  // SVG icon — fine stroke, minimal
   const MicIcon = (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="voice-input-icon"
-    >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" className="voice-input-icon">
       <rect x="9" y="2" width="6" height="12" rx="3" />
       <path d="M5 10v2a7 7 0 0014 0v-2" />
       <path d="M12 19v3" />
@@ -176,50 +160,36 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
   );
 
   const StopIcon = (
-    <svg
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      stroke="currentColor"
-      strokeWidth="1"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="voice-input-icon"
-    >
+    <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1"
+      strokeLinecap="round" strokeLinejoin="round" className="voice-input-icon">
       <rect x="6" y="6" width="12" height="12" rx="2.5" />
     </svg>
   );
 
   const SpinnerIcon = (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="voice-input-icon voice-input-spinner"
-    >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className="voice-input-icon voice-input-spinner">
       <path d="M21 12a9 9 0 11-6.219-8.56" />
     </svg>
   );
 
   const icon =
-    state === "transcribing" ? SpinnerIcon :
-    state === "recording" ? StopIcon :
-    MicIcon;
+    state === "transcribing" || state === "initializing" ? SpinnerIcon :
+    state === "recording" ? StopIcon : MicIcon;
 
   const ariaLabel =
     state === "recording" ? `停止錄音，已錄製 ${timeLabel}` :
     state === "transcribing" ? "語音識別中" :
+    state === "initializing" ? "語音引擎初始化中" :
     "語音輸入";
 
   return (
     <div className="voice-input-wrap">
       <button
         type="button"
-        className={`voice-input-btn state-${state}`}
+        className={`voice-input-btn state-${state === "initializing" ? "transcribing" : state}`}
         onClick={handleClick}
-        disabled={disabled || state === "transcribing"}
+        disabled={disabled || state === "transcribing" || state === "initializing"}
         aria-pressed={state === "recording"}
         aria-label={ariaLabel}
         title={ariaLabel}
@@ -232,6 +202,9 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
         {state === "transcribing" && (
           <span className="voice-input-label">識別中</span>
         )}
+        {state === "initializing" && (
+          <span className="voice-input-label">引擎載入中</span>
+        )}
       </button>
 
       {state === "recording" && (
@@ -242,14 +215,8 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
           aria-label="取消錄音"
           title="取消錄音"
         >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
         </button>

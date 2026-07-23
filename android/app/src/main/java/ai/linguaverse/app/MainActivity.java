@@ -36,6 +36,10 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        // Register the SherpaOnnx plugin BEFORE super.onCreate() so
+        // Capacitor's bridge picks it up during initialization.
+        registerPlugin(SherpaOnnxPlugin.class);
+
         super.onCreate(savedInstanceState);
 
         // Proactively request RECORD_AUDIO if not yet granted. The user

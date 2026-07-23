@@ -150,6 +150,31 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install --no-audit --no-fund
 
+      # ---------- 5a. Download sherpa-onnx AAR + offline models (cached) ----------
+      # The AAR (~5MB) + SenseVoiceSmall model (~234MB) + Silero VAD (~1.8MB)
+      # are downloaded once and cached across builds. They're git-ignored
+      # because they're too large for the repo.
+      - name: 📦 Cache sherpa-onnx models + AAR
+        id: sherpa-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            android/app/libs/sherpa-onnx.aar
+            android/app/src/main/assets/sherpa-models
+          key: sherpa-onnx-v1.10.40-models-v1
+
+      - name: 📥 Download sherpa-onnx AAR + models
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        run: bash scripts/download-sherpa-model.sh
+
+      - name: ✅ Verify sherpa-onnx assets present
+        run: |
+          echo "=== AAR ==="
+          ls -lh android/app/libs/sherpa-onnx.aar
+          echo "=== Models ==="
+          ls -lh android/app/src/main/assets/sherpa-models/sense-voice/
+          ls -lh android/app/src/main/assets/sherpa-models/silero-vad/
+
       # ---------- 5b. Probe Agnes for a working speech-to-text model ----------
       # Agnes's /chat/completions is verified working. The user confirmed
       # Agnes DOES have a speech-recognition model — we just need to find
@@ -514,7 +539,10 @@ jobs:
           APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
           mkdir -p /tmp/apk_verify
           unzip -o "$APK" -d /tmp/apk_verify > /dev/null
-          echo "=== APK assets ==="
+          echo "=== APK size ==="
+          ls -lh "$APK"
+          echo ""
+          echo "=== Web assets ==="
           ls /tmp/apk_verify/assets/public/assets/
           echo ""
           echo "=== Verify APK bundle has the translation endpoint ==="
@@ -523,6 +551,16 @@ jobs:
           echo "=== Verify APK bundle has the model name ==="
           grep -c 'agnes-2.0-flash' /tmp/apk_verify/assets/public/assets/*.js \
             || (echo "::error::APK missing model name!" && exit 1)
+          echo ""
+          echo "=== Verify sherpa-onnx offline models are bundled ==="
+          ls -lh /tmp/apk_verify/assets/sherpa-models/sense-voice/ 2>/dev/null \
+            || (echo "::error::SenseVoice model missing from APK!" && exit 1)
+          ls -lh /tmp/apk_verify/assets/sherpa-models/silero-vad/ 2>/dev/null \
+            || (echo "::error::Silero VAD model missing from APK!" && exit 1)
+          echo ""
+          echo "=== Verify native libs ==="
+          ls /tmp/apk_verify/lib/ 2>/dev/null || echo "(no native libs — expected if AAR bundles them differently)"
+          echo ""
           echo "=== Verify app name & package ==="
           (cd /tmp/apk_verify && "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$OLDPWD/$APK" 2>/dev/null | grep -E "application-label|package")
           echo "=== ALL APK CHECKS PASSED ==="
