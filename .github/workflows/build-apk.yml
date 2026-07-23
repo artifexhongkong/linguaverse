@@ -266,8 +266,10 @@ jobs:
           echo "=== Step 3: Probing /v1/audio/transcriptions with each candidate ==="
           FOUND_MODEL=""
           FOUND_HTTP=""
+          ENDPOINT_EXISTS="yes"
           for MODEL in $MODELS_TO_TRY; do
             [ -z "$MODEL" ] && continue
+            [ "$ENDPOINT_EXISTS" = "no" ] && break
             # Obfuscate the model name in the log to avoid secret-masking
             MODEL_OBF=$(echo "$MODEL" | sed 's/./& /g')
             echo "Trying model='${MODEL_OBF}' ..."
@@ -277,7 +279,7 @@ jobs:
               -F "file=@/tmp/probe.wav" \
               -F "model=${MODEL}" \
               -F "language=zh")
-            RESP=$(head -c 200 /tmp/stt_probe_resp.txt)
+            RESP=$(head -c 250 /tmp/stt_probe_resp.txt)
             echo "  HTTP $HTTP_CODE — $RESP"
             # 200 = success (model works, even if it returned empty text for our silence)
             # 400/422 = model accepted but file rejected (still means model exists)
@@ -288,11 +290,21 @@ jobs:
               break
             fi
             # 503 model_not_found = this specific model isn't available, try next
-            # 401/403 = auth issue (shouldn't happen with the real key)
-            # 404/405 = endpoint doesn't exist at all (no point trying more models)
-            if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "405" ]; then
-              echo "  Endpoint /audio/transcriptions not found — stopping probe."
-              break
+            # 404 with "model_not_found" or "upstream_error" = model doesn't
+            #   support audio — but the ENDPOINT exists, keep trying other models.
+            #   Only break if the 404 is a true "Invalid URL" / endpoint-not-found.
+            if [ "$HTTP_CODE" = "404" ]; then
+              if echo "$RESP" | grep -qi "Invalid URL\|not_found.*endpoint\|route not found"; then
+                echo "  Endpoint /audio/transcriptions does not exist — stopping probe."
+                ENDPOINT_EXISTS="no"
+              else
+                echo "  Model doesn't support audio (upstream 404) — trying next model..."
+              fi
+            fi
+            # 405 = method not allowed = endpoint doesn't accept POST
+            if [ "$HTTP_CODE" = "405" ]; then
+              echo "  Endpoint doesn't accept POST — stopping probe."
+              ENDPOINT_EXISTS="no"
             fi
           done
 
