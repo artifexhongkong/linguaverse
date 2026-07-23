@@ -38,6 +38,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Required for the voice input (STT) feature -->
+    <!-- Required for the voice input (STT) feature.
+         RECORD_AUDIO is the runtime permission (prompts the user).
+         MODIFY_AUDIO_SETTINGS is a normal permission (auto-granted at install)
+         but is also required by the WebView's AUDIO_CAPTURE resource —
+         without it, getUserMedia() throws NotReadableError even when
+         RECORD_AUDIO has been granted. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 </manifest>

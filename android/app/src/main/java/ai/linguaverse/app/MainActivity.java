@@ -3,11 +3,6 @@ package ai.linguaverse.app;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
-import android.webkit.PermissionRequest;
-import android.webkit.WebChromeClient;
-import android.webkit.WebView;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -16,26 +11,24 @@ import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 
 /**
- * Main Capacitor activity with microphone permission handling.
+ * Main Capacitor activity.
  *
- * Why this exists:
- *   Android WebView will reject getUserMedia() requests from web content
- *   unless the WebChromeClient.onPermissionRequest() callback explicitly
- *   grants RESOURCE_AUDIO_CAPTURE — even when RECORD_AUDIO is already
- *   granted at the OS level. Capacitor's default BridgeActivity does not
- *   override this callback, so voice input fails with errors like:
- *     - "麥克風權限被拒絕"  (NotAllowedError)
- *     - "無法存取麥克風: ..."  (other DOMException variants)
+ * Microphone handling:
+ *   Capacitor 6's BridgeWebChromeClient already implements
+ *   onPermissionRequest() — when the web content calls getUserMedia(),
+ *   Capacitor requests RECORD_AUDIO + MODIFY_AUDIO_SETTINGS via the
+ *   ActivityResult API and grants the WebView's AUDIO_CAPTURE resource
+ *   on success.
  *
- * Fix:
- *   1. On startup, proactively request RECORD_AUDIO if not yet granted.
- *   2. Install a WebChromeClient that grants RESOURCE_AUDIO_CAPTURE when
- *      the OS-level permission is held. We install it AFTER super.onCreate()
- *      AND re-install it on a delayed handler to make sure we run after
- *      Capacitor's own WebChromeClient setup (Capacitor sets its client
- *      inside bridge.create() which is called from super.onCreate() → load(),
- *      but in some Capacitor 6.x versions the client can be re-applied
- *      lazily on first page load, so we also re-apply on a 500ms delay).
+ *   IMPORTANT: do NOT call webView.setWebChromeClient() here — that
+ *   would REPLACE Capacitor's BridgeWebChromeClient and break the
+ *   permission-grant flow. (This was the root cause of the
+ *   "麥克風被其他程式佔用" error in v1.0.4: a custom WebChromeClient
+ *   was granting RESOURCE_AUDIO_CAPTURE without first requesting
+ *   MODIFY_AUDIO_SETTINGS, so getUserMedia threw NotReadableError.)
+ *
+ *   All we do here is proactively request RECORD_AUDIO on startup so
+ *   the user isn't surprised by a permission dialog on first tap.
  */
 public class MainActivity extends BridgeActivity {
 
@@ -45,9 +38,10 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(android.os.Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Ensure RECORD_AUDIO is granted at the OS level before the WebView
-        //    tries to use it. If not, request it — the user will see the
-        //    standard Android permission dialog.
+        // Proactively request RECORD_AUDIO if not yet granted. The user
+        // will see the standard Android permission dialog. If they grant
+        // it here, the WebView's onPermissionRequest (handled by Capacitor)
+        // will succeed instantly on first mic tap.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -58,62 +52,15 @@ public class MainActivity extends BridgeActivity {
                 );
             }
         }
-
-        // 2. Install the permission-granting WebChromeClient. Do it now AND
-        //    again on a 500ms delay to ensure we override Capacitor's client
-        //    (which may be set lazily on first page load).
-        installPermissionWebChromeClient();
-        new Handler(Looper.getMainLooper()).postDelayed(this::installPermissionWebChromeClient, 500);
-        new Handler(Looper.getMainLooper()).postDelayed(this::installPermissionWebChromeClient, 2000);
-    }
-
-    /**
-     * Install a WebChromeClient that grants RESOURCE_AUDIO_CAPTURE when the
-     * OS-level RECORD_AUDIO permission is held.
-     *
-     * This is idempotent — calling it multiple times just re-installs the
-     * same client.
-     */
-    private void installPermissionWebChromeClient() {
-        if (bridge == null) return;
-        WebView webView = bridge.getWebView();
-        if (webView == null) return;
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {
-                runOnUiThread(() -> {
-                    java.util.List<String> granted = new java.util.ArrayList<>();
-                    for (String resource : request.getResources()) {
-                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
-                            if (ContextCompat.checkSelfPermission(
-                                    MainActivity.this, Manifest.permission.RECORD_AUDIO)
-                                    == PackageManager.PERMISSION_GRANTED) {
-                                granted.add(resource);
-                            } else {
-                                // OS permission not granted yet — request it
-                                // and deny this web request. The user can tap
-                                // the mic button again after granting.
-                                ActivityCompat.requestPermissions(
-                                        MainActivity.this,
-                                        new String[]{Manifest.permission.RECORD_AUDIO},
-                                        REQ_AUDIO_PERMISSION
-                                );
-                            }
-                        }
-                    }
-                    if (granted.isEmpty()) {
-                        request.deny();
-                    } else {
-                        request.grant(granted.toArray(new String[0]));
-                    }
-                });
-            }
-        });
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        // Let Capacitor's bridge handle its own permission callbacks first
+        // (it dispatches to registered plugins, including the
+        // BridgeWebChromeClient's permissionLauncher). Then log our
+        // audio result for debugging.
         if (requestCode == REQ_AUDIO_PERMISSION) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 android.util.Log.i("LinguaVerse", "RECORD_AUDIO permission granted");
