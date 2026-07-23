@@ -279,15 +279,32 @@ jobs:
               -F "file=@/tmp/probe.wav" \
               -F "model=${MODEL}" \
               -F "language=zh")
-            RESP=$(head -c 250 /tmp/stt_probe_resp.txt)
+            RESP=$(head -c 400 /tmp/stt_probe_resp.txt)
             echo "  HTTP $HTTP_CODE — $RESP"
             # 200 = success (model works, even if it returned empty text for our silence)
             # 400/422 = model accepted but file rejected (still means model exists)
-            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "422" ]; then
+            #   BUT only if the error is about the FILE, not about the MODEL.
+            #   "LLM Provider NOT provided" or "model_not_found" or "Model is blocked"
+            #   means the model itself doesn't support audio — keep trying.
+            if [ "$HTTP_CODE" = "200" ]; then
               FOUND_MODEL="$MODEL"
               FOUND_HTTP="$HTTP_CODE"
-              echo "  ✅ Model accepted!"
+              echo "  ✅ Model accepted (200)!"
               break
+            fi
+            if [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "422" ]; then
+              # Check if the 400 is a file-related error (model works, file bad)
+              # vs a model-related error (model doesn't support audio).
+              if echo "$RESP" | grep -qi "LLM Provider NOT provided\|model_not_found\|Model is blocked\|does not support\|not supported\|unsupported model"; then
+                echo "  Model doesn't support audio (400 model error) — trying next..."
+              else
+                # File-related 400 (e.g. "file too short", "invalid audio")
+                # → model EXISTS and accepts audio, our probe file is just bad
+                FOUND_MODEL="$MODEL"
+                FOUND_HTTP="$HTTP_CODE"
+                echo "  ✅ Model accepted (400 file error — model works, probe file rejected)!"
+                break
+              fi
             fi
             # 503 model_not_found = this specific model isn't available, try next
             # 404 with "model_not_found" or "upstream_error" = model doesn't
@@ -316,8 +333,30 @@ jobs:
             echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
             echo "stt_model=$FOUND_MODEL" >> $GITHUB_OUTPUT
           else
-            echo "::notice::Agnes gateway has no working speech-to-text model (tried: $MODELS_TO_TRY). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (OpenAI / Groq / DeepInfra)."
-            echo "use_agnes=false" >> $GITHUB_OUTPUT
+            echo "=== Step 4: No model worked via /audio/transcriptions. Trying multimodal chat ==="
+            # Some providers expose STT via chat completions with audio input
+            # rather than the Whisper endpoint. Try sending the WAV as base64
+            # in a chat message to each model.
+            echo "Testing multimodal audio via /chat/completions with agnes-2.0-flash..."
+            B64_AUDIO=$(base64 -w 0 /tmp/probe.wav)
+            HTTP_CODE=$(curl -s -o /tmp/stt_probe_resp.txt -w "%{http_code}" \
+              -X POST "${AGNES_BASE_URL}/chat/completions" \
+              -H "Authorization: Bearer ${AGNES_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"model\":\"agnes-2.0-flash\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Transcribe this audio\"},{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"${B64_AUDIO}\",\"format\":\"wav\"}}]}]}")
+            RESP=$(head -c 400 /tmp/stt_probe_resp.txt)
+            echo "  HTTP $HTTP_CODE — $RESP"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Agnes supports multimodal audio via chat! Using agnes-2.0-flash for STT."
+              echo "use_agnes=true" >> $GITHUB_OUTPUT
+              echo "stt_api_key=$AGNES_API_KEY" >> $GITHUB_OUTPUT
+              echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
+              echo "stt_model=agnes-2.0-flash" >> $GITHUB_OUTPUT
+              echo "stt_mode=multimodal" >> $GITHUB_OUTPUT
+            else
+              echo "::notice::Agnes gateway has no working speech-to-text model (tried Whisper endpoint + multimodal chat). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (OpenAI / Groq / DeepInfra)."
+              echo "use_agnes=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
       # ---------- 5c. Build the web bundle (Vite) ----------
