@@ -147,65 +147,77 @@ jobs:
           echo "=== APK assets ==="
           ls /tmp/apk_verify/assets/public/assets/
           echo ""
-          echo "=== Verify APK bundle has Agnes URL ==="
-          grep -c 'apihub.agnes-ai.com' /tmp/apk_verify/assets/public/assets/*.js || (echo "ERROR: APK missing Agnes URL!" && exit 1)
-          echo "=== Verify APK bundle has model name ==="
+          echo "=== Verify APK bundle has the translation endpoint ==="
+          grep -c 'apihub.agnes-ai.com' /tmp/apk_verify/assets/public/assets/*.js || (echo "ERROR: APK missing translation endpoint!" && exit 1)
+          echo "=== Verify APK bundle has the model name ==="
           grep -c 'agnes-2.0-flash' /tmp/apk_verify/assets/public/assets/*.js || (echo "ERROR: APK missing model name!" && exit 1)
-          echo "=== Verify APK does NOT have LLaMA-3.1 ==="
+          echo "=== Verify APK does NOT have legacy LLaMA-3.1 marker ==="
           if grep -q 'LLaMA-3.1' /tmp/apk_verify/assets/public/assets/*.js; then
             echo "ERROR: APK still has LLaMA-3.1 — old bundle got packaged!"
             exit 1
           fi
           echo "=== Verify app name ==="
-          grep -ao '译境 LinguaVerse' /tmp/apk_verify/resources.arsc 2>/dev/null | head -1 || \
-            (cd /tmp/apk_verify && aapt dump badging "$OLDPWD/$APK" 2>/dev/null | grep -E "application:|label:")
+          (cd /tmp/apk_verify && "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$OLDPWD/$APK" 2>/dev/null | grep -E "application-label|package")
           echo "ALL CHECKS PASSED"
 
-      - name: Locate APK
+      - name: Compute version info
+        id: ver
+        run: |
+          # Pull versionName from build.gradle so the APK filename matches what's inside.
+          VERSION_NAME=$(grep -E '^\s*versionName' android/app/build.gradle | head -1 | sed -E 's/.*versionName "([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -E '^\s*versionCode' android/app/build.gradle | head -1 | sed -E 's/.*versionCode ([0-9]+).*/\1/')
+          echo "name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
+
+      - name: Locate APK & rename with version
         id: apk
         run: |
           APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
-          echo "name=linguaverse-$(date +%Y%m%d)-${GITHUB_SHA::7}.apk" >> "$GITHUB_OUTPUT"
-          ls -la "$APK"
+          echo "Found APK: $APK"
+          # Rename to include version number and a short SHA for traceability.
+          # e.g. linguaverse-1.0.1-05fdc37.apk
+          VERSION="${{ steps.ver.outputs.name }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          RENAMED="/tmp/linguaverse-${VERSION}-${SHORT_SHA}.apk"
+          cp "$APK" "$RENAMED"
+          echo "path=$RENAMED" >> "$GITHUB_OUTPUT"
+          echo "filename=$(basename "$RENAMED")" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ls -la "$RENAMED"
 
       - name: Compute version tag
         id: tag
         run: |
+          VERSION="${{ steps.ver.outputs.name }}"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
-            V="${{ github.event.inputs.version_name }}"
-            [ -z "$V" ] && V="1.0.1"
-            echo "name=v${V}-$(date +%Y%m%d%H%M)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "name=v${VERSION}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release & upload APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
-          name: 译境 LinguaVerse ${{ steps.tag.outputs.name }}
-          generate_release_notes: true
+          name: 译境 LinguaVerse ${{ steps.apk.outputs.version }}
           files: ${{ steps.apk.outputs.path }}
           fail_on_unmatched_files: true
           prerelease: false
           body: |
-            ## 译境 LinguaVerse — AI 語境翻譯
+            ## 译境 LinguaVerse v${{ steps.apk.outputs.version }}
 
             Built from commit `${{ github.sha }}`.
 
-            **Translation engine**: Agnes AI `agnes-2.0-flash` model
-            - Base URL: `https://apihub.agnes-ai.com/v1`
-            - APK calls Agnes directly (no Supabase Edge Function dependency)
+            ### 下載
+            - **APK 檔案**：`${{ steps.apk.outputs.filename }}`
+            - **版本號**：v${{ steps.apk.outputs.version }}
 
-            **APK is signed** with the project's release keystore (SHA256 signing cert: see workflow logs).
+            ### 安装方式
+            下載 APK 後直接在 Android 手機上點擊安裝。如系統提示「未知來源」，請在設定中允許從瀏覽器安裝。
 
-            ### Verification
-            The workflow runs sanity checks to confirm the APK bundle contains:
-            - `apihub.agnes-ai.com` (correct Agnes API endpoint)
-            - `agnes-2.0-flash` (correct model ID)
-            - The API key
-            - **Not** the old `LLaMA-3.1` model reference
-            - **Is signed** (apksigner verify passes)
-
-            If you see this release, all those checks passed.
+            ### 這個版本
+            - 全新 UI 設計：更清晰的翻譯卡片、一鍵複製按鈕
+            - 翻譯歷史頁面優化
+            - 設定頁面精簡
+            - 已签名 APK，可直接安装

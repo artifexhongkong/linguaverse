@@ -78,7 +78,6 @@ export default function App() {
 
   const handleUpgrade = (newPlan: string) => {
     if (newPlan === "enterprise") { showToast("已為您建立聯絡請求，專員將與您聯繫"); return; }
-    setPlan(newPlan);
     setShowPricing(false);
     showToast(`已升級至 ${newPlan === "pro" ? "Pro" : "Enterprise"} 方案`);
     if (isSupabaseConfigured) {
@@ -105,12 +104,15 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <div className="header-logo">L</div>
-          <div className="header-name">LinguaVerse</div>
+          <div className="header-logo">译</div>
+          <div className="header-name">
+            <b>译境 LinguaVerse</b>
+            <span>AI 語境翻譯</span>
+          </div>
         </div>
-        <div className="header-plan-badge" onClick={() => setShowPricing(true)} style={{ cursor: "pointer" }}>
+        <button className="header-plan-badge" onClick={() => setShowPricing(true)}>
           {plan === "free" ? "FREE" : plan === "pro" ? "PRO" : "ENTERPRISE"}
-        </div>
+        </button>
       </header>
 
       <main className="app-content">

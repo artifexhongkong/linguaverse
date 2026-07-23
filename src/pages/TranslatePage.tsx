@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { LANGUAGES, CONTEXT_MODES, getLanguage } from "../lib/languages";
-import { scheduleTranslation, type SchedulerResult } from "../service/translator-scheduler";
+import { LANGUAGES, CONTEXT_MODES, getLanguage, getContextMode } from "../lib/languages";
+import { scheduleTranslation, type TranslationOutput } from "../service/translator-scheduler";
 import { insertTranslation, incrementQuota } from "../lib/supabase";
 import { BottomSheet, SheetItem } from "../components/BottomSheet";
 
@@ -20,14 +20,16 @@ export function TranslatePage({
   sourceLang, targetLang, context, onLangChange, onContextChange, onToast, onQuotaUpdate, quotaUsed, quotaLimit,
 }: TranslatePageProps) {
   const [input, setInput] = useState("");
-  const [result, setResult] = useState<SchedulerResult | null>(null);
+  const [result, setResult] = useState<TranslationOutput | null>(null);
   const [loading, setLoading] = useState(false);
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
+  const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const charLimit = 500;
-  const remaining = quotaLimit - quotaUsed;
+  const remaining = Math.max(quotaLimit - quotaUsed, 0);
   const canTranslate = input.trim().length > 0 && !loading && remaining > 0;
+  const ctxMode = getContextMode(context);
 
   const handleTranslate = async () => {
     if (!canTranslate) return;
@@ -38,9 +40,12 @@ export function TranslatePage({
       const res = await scheduleTranslation(input, sourceLang, targetLang, context);
       setResult(res);
       await insertTranslation({
-        source_text: input.trim(), translated_text: res.text,
-        source_lang: res.detectedLang ?? sourceLang, target_lang: targetLang,
-        context_mode: context, confidence: res.confidence,
+        source_text: input.trim(),
+        translated_text: res.text,
+        source_lang: res.detectedLang ?? sourceLang,
+        target_lang: targetLang,
+        context_mode: context,
+        confidence: 0.95,
       });
       await incrementQuota(1);
       onQuotaUpdate();
@@ -59,38 +64,57 @@ export function TranslatePage({
 
   const handleCopy = async () => {
     if (!result) return;
-    try { await navigator.clipboard.writeText(result.text); onToast("已複製到剪貼簿"); } catch { onToast("複製失敗"); }
+    const text = result.text;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      onToast("已複製到剪貼簿");
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      onToast("複製失敗");
+    }
   };
 
-  const handleClear = () => { setInput(""); setResult(null); setSaved(false); };
+  const handleClear = () => {
+    setInput(""); setResult(null); setSaved(false); setCopied(false);
+  };
 
-  const confidenceLevel = result
-    ? result.confidence >= 0.85 ? "high" : result.confidence >= 0.6 ? "mid" : "low"
-    : "high";
+  const displayText = result ? result.text : "";
 
   return (
     <div className="page translate-page">
       <div className="lang-bar">
         <button className="lang-select" onClick={() => setSheet("source")}>
-          <span className="lang-flag">{getLanguage(sourceLang).flag}</span>
-          <span className="lang-name">{getLanguage(sourceLang).nativeName}</span>
+          <span className="lang-select-meta">來源</span>
+          <span className="lang-select-current">
+            <span className="lang-flag">{getLanguage(sourceLang).flag}</span>
+            <span className="lang-name">{getLanguage(sourceLang).nativeName}</span>
+          </span>
         </button>
-        <button className="lang-arrow" onClick={handleSwap} aria-label="交換語言">
+        <button className="lang-swap" onClick={handleSwap} aria-label="交換語言">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4" />
           </svg>
         </button>
         <button className="lang-select" onClick={() => setSheet("target")}>
-          <span className="lang-flag">{getLanguage(targetLang).flag}</span>
-          <span className="lang-name">{getLanguage(targetLang).nativeName}</span>
+          <span className="lang-select-meta">目標</span>
+          <span className="lang-select-current">
+            <span className="lang-flag">{getLanguage(targetLang).flag}</span>
+            <span className="lang-name">{getLanguage(targetLang).nativeName}</span>
+          </span>
         </button>
       </div>
 
       <div className="context-section">
-        <div className="context-label">語境模式</div>
+        <div className="section-label">語境模式</div>
         <div className="context-chips">
           {CONTEXT_MODES.map((c) => (
-            <button key={c.code} className={`context-chip ${context === c.code ? "active" : ""}`} onClick={() => onContextChange(c.code)}>
+            <button
+              key={c.code}
+              className={`context-chip ${context === c.code ? "active" : ""}`}
+              onClick={() => onContextChange(c.code)}
+            >
               <span className="context-chip-icon">{c.icon}</span>
               {c.name}
             </button>
@@ -98,7 +122,7 @@ export function TranslatePage({
         </div>
       </div>
 
-      <div className="translate-input-card">
+      <div className="input-card">
         <textarea
           className="translate-textarea"
           placeholder="輸入要翻譯的文字…"
@@ -106,12 +130,12 @@ export function TranslatePage({
           onChange={(e) => {
             const val = e.target.value.slice(0, charLimit);
             setInput(val);
-            if (result) { setResult(null); setSaved(false); }
+            if (result) { setResult(null); setSaved(false); setCopied(false); }
           }}
           maxLength={charLimit}
         />
         <div className="input-footer">
-          <span className={`char-count ${input.length > charLimit * 0.8 ? "warn" : ""}`}>
+          <span className={`char-count ${input.length > charLimit * 0.85 ? "warn" : ""}`}>
             {input.length} / {charLimit}
           </span>
           <div className="input-actions">
@@ -124,13 +148,15 @@ export function TranslatePage({
         </div>
       </div>
 
-      <button className={`translate-btn ${loading ? "loading" : ""}`} onClick={handleTranslate} disabled={!canTranslate}>
+      <button
+        className={`translate-btn ${loading ? "loading" : ""}`}
+        onClick={handleTranslate}
+        disabled={!canTranslate}
+      >
         {loading ? (
           <>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 12a9 9 0 11-6.219-8.56" />
-            </svg>
-            AI 語境分析中…
+            語境分析中
+            <span className="btn-dots"><span /><span /><span /></span>
           </>
         ) : (
           <>
@@ -142,45 +168,75 @@ export function TranslatePage({
         )}
       </button>
 
-      {result && (
-        <div className={`result-card anim-up ${result.engine === "machine-fallback" ? "result-fallback" : ""}`}>
-          <div className="result-header">
+      {!loading && !result && remaining > 0 && (
+        <div className="quota-hint">本月剩餘 <b>{remaining}</b> 次翻譯</div>
+      )}
+      {!loading && remaining <= 0 && (
+        <div className="quota-hint">本月配額已用完，升級 Pro 享受無限翻譯</div>
+      )}
+
+      {loading && (
+        <div className="result-card anim-up">
+          <div className="result-head">
             <div className="result-label">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              {result.engine === "machine-fallback" ? "機器兜底翻譯" : `${result.model ?? "agnes-2.0-flash"} 翻譯`} {saved && "· 已儲存"}
+              翻譯結果
             </div>
           </div>
-          {result.fallbackNotice && (
-            <div className="fallback-notice">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
-                <path d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+          <div className="result-skeleton">
+            <div className="sk-line shimmer" style={{ width: "92%", height: 16 }} />
+            <div className="sk-line shimmer" style={{ width: "78%", height: 16 }} />
+            <div className="sk-line shimmer" style={{ width: "60%", height: 16 }} />
+          </div>
+        </div>
+      )}
+
+      {result && !loading && (
+        <div className="result-card anim-up">
+          <div className="result-head">
+            <div className="result-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              {result.fallbackNotice}
+              翻譯結果
             </div>
-          )}
-          <div className="result-text">{result.text}</div>
-          {result.contextNote && (
-            <div className="context-note">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
-                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {result.contextNote}
-            </div>
-          )}
-          <div className="result-footer">
-            <div className="confidence-badge">
-              <span className={`confidence-dot ${confidenceLevel}`} />
-              信心指數 {Math.round(result.confidence * 100)}%
-            </div>
-            <div className="result-actions">
-              <button className="icon-btn" onClick={handleCopy} aria-label="複製">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            <button className={`copy-btn ${copied ? "copied" : ""}`} onClick={handleCopy} aria-label="複製譯文">
+              {copied ? (
+                <>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                  已複製
+                </>
+              ) : (
+                <>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="11" height="11" rx="2" />
+                    <path d="M5 15V5a2 2 0 012-2h10" />
+                  </svg>
+                  複製
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="result-text">{displayText}</div>
+
+          <div className="result-meta">
+            <span className="result-tag">
+              <span className="result-tag-icon">{ctxMode.icon}</span>
+              {ctxMode.name}模式
+            </span>
+            {saved && (
+              <span className="result-saved">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 13l4 4L19 7" />
                 </svg>
-              </button>
-            </div>
+                已儲存
+              </span>
+            )}
           </div>
         </div>
       )}

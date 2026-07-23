@@ -66,7 +66,7 @@ export async function agnesTranslate(
   }
 
   if (!AGNES_API_KEY) {
-    throw new Error("Agnes API key is not configured. Set VITE_AGNES_API_KEY in .env before building.");
+    throw new Error("翻譯服務暫時無法使用，請稍後再試");
   }
 
   const fullSystemPrompt = buildSystemPrompt(text, sourceLang, targetLang, context, systemPrompt);
@@ -88,14 +88,17 @@ export async function agnesTranslate(
   });
 
   if (!response.ok) {
+    // Log full error to console for debugging, but throw a neutral message
+    // so the underlying service name never surfaces in the UI.
     const errText = await response.text().catch(() => "");
-    throw new Error(`Agnes API error: ${response.status} ${errText.slice(0, 200)}`);
+    console.error(`[translate] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    throw new Error("翻譯服務暫時無法使用，請稍後再試");
   }
 
   const data = await response.json();
   const translatedText = data?.choices?.[0]?.message?.content ?? "";
   if (!translatedText.trim()) {
-    throw new Error("Agnes API returned empty translation.");
+    throw new Error("翻譯失敗，請稍後再試");
   }
 
   return {
@@ -133,7 +136,8 @@ async function callViaSupabaseEdge(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
-    throw new Error(`Agnes API error: ${response.status} ${errText}`);
+    console.error(`[translate] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    throw new Error("翻譯服務暫時無法使用，請稍後再試");
   }
 
   const data = await response.json();
