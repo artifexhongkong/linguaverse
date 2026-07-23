@@ -83,18 +83,36 @@ jobs:
       - name: 🔄 Capacitor sync
         run: npx cap sync android
 
-      # ---------- 5. Decode signing keystore (if provided) ----------
+      # ---------- 5. Decode signing keystore (if all 4 secrets are set) ----------
+      # Secret names match what's configured in the repo:
+      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+      #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+      # If any are missing, we skip signing and produce an unsigned APK.
       - name: 🔑 Decode signing keystore
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        id: keystore
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KS_KEY_PASS" ]; then
+            echo "::notice::Signing secrets not fully configured — building unsigned APK."
+            echo "signed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           echo "Decoding keystore from ANDROID_KEYSTORE_BASE64..."
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > $RUNNER_TEMP/release.keystore
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          # Sanity-check the keystore is readable with the provided password
+          if ! keytool -list -keystore "$RUNNER_TEMP/release.keystore" -storepass "$KS_PASS" >/dev/null 2>&1; then
+            echo "::error::Keystore password incorrect — aborting signed build."
+            exit 1
+          fi
           echo "KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
-          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+          echo "KEYSTORE_PASSWORD=$KS_PASS" >> $GITHUB_ENV
+          echo "KEY_ALIAS=$KS_ALIAS" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=$KS_KEY_PASS" >> $GITHUB_ENV
+          echo "signed=true" >> $GITHUB_OUTPUT
 
       # ---------- 6. Setup JDK ----------
       - name: ☕ Setup JDK 17

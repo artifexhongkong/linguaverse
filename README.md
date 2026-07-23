@@ -114,9 +114,9 @@ APK 輸出路徑：`android/app/build/outputs/apk/release/app-release-unsigned.a
 
 **APK 簽署**
 - `ANDROID_KEYSTORE_BASE64` — `base64 < release.keystore` 的輸出
-- `KEYSTORE_PASSWORD`
-- `KEY_ALIAS`
-- `KEY_PASSWORD`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
 
 > 若未設定 signing secrets，workflow 會輸出未簽署 APK 並照常發佈到 Releases，可用於內部測試。
 
