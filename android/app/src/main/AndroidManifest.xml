@@ -38,4 +38,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required for the voice input (STT) feature -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 </manifest>

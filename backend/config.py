@@ -39,21 +39,44 @@ class Settings:
     AGNES_BASE_URL: str
     AGNES_MODEL: str
 
+    # STT (Whisper) — defaults to the Agnes gateway because it exposes an
+    # OpenAI-compatible /audio/transcriptions endpoint. Override via env
+    # if you want to use the official OpenAI API instead.
+    STT_API_KEY: str
+    STT_BASE_URL: str
+    STT_MODEL: str
+
     @property
     def is_configured(self) -> bool:
         return bool(self.AGNES_API_KEY and self.AGNES_API_KEY.startswith("sk-"))
+
+    @property
+    def is_stt_configured(self) -> bool:
+        return bool(self.STT_API_KEY and self.STT_BASE_URL)
 
     @property
     def chat_completions_url(self) -> str:
         base = self.AGNES_BASE_URL.rstrip("/")
         return f"{base}/chat/completions"
 
+    @property
+    def audio_transcriptions_url(self) -> str:
+        base = self.STT_BASE_URL.rstrip("/")
+        return f"{base}/audio/transcriptions"
+
 
 def _load_settings() -> Settings:
+    agnes_key = os.getenv("AGNES_API_KEY", "").strip()
     return Settings(
-        AGNES_API_KEY=os.getenv("AGNES_API_KEY", "").strip(),
+        AGNES_API_KEY=agnes_key,
         AGNES_BASE_URL=os.getenv("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1").strip(),
         AGNES_MODEL=os.getenv("AGNES_MODEL", "agnes-2.0-flash").strip(),
+        # STT defaults to the same Agnes gateway + key (it exposes an
+        # OpenAI-compatible Whisper endpoint). Override with STT_* env
+        # vars if you want a separate provider.
+        STT_API_KEY=os.getenv("STT_API_KEY", agnes_key).strip(),
+        STT_BASE_URL=os.getenv("STT_BASE_URL", "https://apihub.agnes-ai.com/v1").strip(),
+        STT_MODEL=os.getenv("STT_MODEL", "whisper-1").strip(),
     )
 
 
