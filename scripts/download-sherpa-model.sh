@@ -29,10 +29,10 @@ SENSE_VOICE_FILES=(
 )
 
 # Silero VAD
-VAD_URL="https://github.com/k2-fsa/sherpa-onnx/raw/master/sherpa-onnx/csrc/vad-models/silero_vad.onnx"
+VAD_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
 
-# sherpa-onnx AAR
-AAR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/sherpa-onnx-v${SHERPA_VERSION}.aar"
+# sherpa-onnx AAR (note: filename has NO 'v' prefix — it's sherpa-onnx-1.10.40.aar)
+AAR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/sherpa-onnx-${SHERPA_VERSION}.aar"
 
 # --- Create directories ---
 mkdir -p "$MODEL_DIR/sense-voice"
