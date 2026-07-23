@@ -1207,27 +1207,33 @@
 .sheet-item-check svg { width: 18px; height: 18px; }
 
 /* ============================================================
-   Toast — dark pill on light theme
+   Toast — bottom-center pill, sits just above the bottom nav
    ============================================================ */
 .toast {
   position: fixed;
-  bottom: calc(86px + var(--safe-bottom));
+  bottom: calc(72px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
   background: #1A1D29;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--r-full);
-  padding: 11px 20px;
-  font-size: 13px;
+  padding: 12px 22px;
+  font-size: 13.5px;
   font-weight: 600;
   color: #FFFFFF;
   z-index: 200;
-  box-shadow: var(--shadow-lg);
-  animation: fadeInUp 0.3s var(--ease-out) both;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.02);
+  animation: toastIn 0.32s var(--ease-out) both;
   white-space: nowrap;
   max-width: 90vw;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* ============================================================

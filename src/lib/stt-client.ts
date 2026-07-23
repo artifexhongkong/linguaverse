@@ -94,10 +94,29 @@ export async function startRecording(): Promise<RecordingController> {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
-    if (err instanceof DOMException && err.name === "NotAllowedError") {
-      throw new Error("麥克風權限被拒絕，請在系統設定中允許");
+    if (err instanceof DOMException) {
+      // Provide actionable messages for the most common failure modes.
+      // In Android WebView, the error name is the most reliable signal
+      // (the .message is often empty or generic like "Permission denied").
+      switch (err.name) {
+        case "NotAllowedError":
+          throw new Error("麥克風權限被拒絕，請到系統設定允許後重試");
+        case "NotFoundError":
+        case "OverconstrainedError":
+          throw new Error("找不到麥克風裝置，請確認麥克風已連接");
+        case "NotReadableError":
+        case "AbortError":
+          // NotReadableError usually means another app is holding the mic,
+          // or the WebView permission grant was lost. Suggest restarting.
+          throw new Error("麥克風被其他程式佔用，請關閉後重試或重啟 App");
+        case "SecurityError":
+          throw new Error("麥克風需在安全連線下使用，請更新 App");
+      }
     }
-    throw new Error("無法存取麥克風：" + (err as Error).message);
+    // Fallback — include the error name so we can diagnose future cases.
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("[stt] getUserMedia failed:", detail);
+    throw new Error("無法啟動麥克風，請重啟 App 後再試");
   }
 
   // Pick the best supported mime type — Android WebView usually supports
