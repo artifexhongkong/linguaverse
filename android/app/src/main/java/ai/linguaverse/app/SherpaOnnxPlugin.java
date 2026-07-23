@@ -15,14 +15,17 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import com.k2fsa.sherpa.onnx.FeatureConfig;
+import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
-import com.k2fsa.sherpa.onnx.SenseVoiceModelConfig;
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
+import com.k2fsa.sherpa.onnx.OfflineStream;
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig;
 import com.k2fsa.sherpa.onnx.SpeechSegment;
+import com.k2fsa.sherpa.onnx.Vad;
 import com.k2fsa.sherpa.onnx.VadModelConfig;
-import com.k2fsa.sherpa.onnx.VoiceActivityDetector;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -35,12 +38,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * SherpaOnnxPlugin — offline speech-to-text via sherpa-onnx + SenseVoiceSmall.
  *
+ * API: Kotlin data-class style (NOT builder pattern). Config objects are
+ * created via constructor with named parameters emulated via overloads.
+ *
  * Architecture:
  *   [JS VoiceInput] → startListening() → [Native AudioRecord @ 16kHz]
  *                                          ↓
  *                                   [Silero VAD segments speech]
  *                                          ↓
- *                                   [SenseVoiceSmall recognizes segment]
+ *                                   [OfflineStream + SenseVoiceSmall decode]
  *                                          ↓
  *                                   [Callback with punctuated text]
  *
@@ -50,7 +56,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   - Results are posted back to the main thread via Handler.
  *
  * Hardware acceleration:
- *   - NNAPI provider enabled for both recognizer and VAD.
+ *   - NNAPI provider enabled (set on OfflineModelConfig + VadModelConfig).
  *   - numThreads = 2 for balanced CPU usage.
  *
  * Model files (bundled in assets/sherpa-models/, copied to internal
@@ -69,9 +75,9 @@ public class SherpaOnnxPlugin extends Plugin {
     private static final String ASSET_DIR = "sherpa-models";
     private static final int SAMPLE_RATE = 16000;
 
-    // Native inference objects — created in initSpeechRecognizer()
+    // Native inference objects
     private OfflineRecognizer recognizer;
-    private VoiceActivityDetector vad;
+    private Vad vad;
 
     // Audio capture
     private AudioRecord audioRecord;
@@ -81,7 +87,7 @@ public class SherpaOnnxPlugin extends Plugin {
     private ExecutorService inferenceExecutor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    // State flags (thread-safe)
+    // State
     private final AtomicBoolean isListening = new AtomicBoolean(false);
     private final AtomicBoolean isInitialized = new AtomicBoolean(false);
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
@@ -137,8 +143,8 @@ public class SherpaOnnxPlugin extends Plugin {
      * initSpeechRecognizer — async model loading.
      *
      * Copies model files from assets to internal storage (first time only),
-     * then creates the OfflineRecognizer (SenseVoiceSmall) and
-     * VoiceActivityDetector (Silero VAD) with NNAPI + 2 threads.
+     * then creates the OfflineRecognizer (SenseVoiceSmall) and Vad (Silero)
+     * with NNAPI + 2 threads.
      */
     @PluginMethod
     public void initSpeechRecognizer(PluginCall call) {
@@ -157,7 +163,7 @@ public class SherpaOnnxPlugin extends Plugin {
                 Context ctx = getContext();
                 File modelsDir = new File(ctx.getFilesDir(), ASSET_DIR);
 
-                // 1. Copy models from assets to internal storage (idempotent)
+                // 1. Copy models from assets to internal storage
                 Log.i(TAG, "Copying models from assets to " + modelsDir);
                 copyAssetsToInternal(ctx, ASSET_DIR, modelsDir);
 
@@ -165,50 +171,81 @@ public class SherpaOnnxPlugin extends Plugin {
                 String tokensPath = new File(modelsDir, "sense-voice/tokens.txt").getAbsolutePath();
                 String vadModelPath = new File(modelsDir, "silero-vad/silero_vad.onnx").getAbsolutePath();
 
-                // Verify files exist
                 verifyFile(modelPath);
                 verifyFile(tokensPath);
                 verifyFile(vadModelPath);
 
-                // 2. Build SenseVoice config — NNAPI + 2 threads
-                SenseVoiceModelConfig senseVoice = SenseVoiceModelConfig.builder()
-                        .setModel(modelPath)
-                        .setTokens(tokensPath)
-                        .setNumThreads(2)
-                        .build();
+                // 2. Build SenseVoice config
+                //    OfflineSenseVoiceModelConfig(model, language, useInverseTextNormalization)
+                OfflineSenseVoiceModelConfig senseVoice = new OfflineSenseVoiceModelConfig(
+                        modelPath,   // model
+                        "auto",      // language — auto-detect (zh/en/ja/ko/yue)
+                        true         // useInverseTextNormalization
+                );
 
-                OfflineRecognizerConfig recognizerConfig = OfflineRecognizerConfig.builder()
-                        .setSenseVoice(senseVoice)
-                        .setDebug(false)
-                        .build();
+                // 3. Build OfflineModelConfig — holds tokens, numThreads, provider
+                //    Constructor params (Kotlin data class):
+                //      transducer, paraformer, whisper, moonshine, nemo,
+                //      senseVoice, tokens, numThreads, debug, provider,
+                //      modelType, modelingUnit, lemmaText, hotwordsFile, parakeet
+                //    We only set senseVoice, tokens, numThreads, provider, debug.
+                //    Others get default empty/null values.
+                OfflineModelConfig modelConfig = new OfflineModelConfig(
+                        null,         // transducer
+                        null,         // paraformer
+                        null,         // whisper
+                        null,         // moonshine
+                        null,         // nemo
+                        senseVoice,   // senseVoice
+                        tokensPath,   // tokens
+                        2,            // numThreads
+                        false,        // debug
+                        "nnapi",      // provider — Android hardware acceleration
+                        null, 0, null, null, null, null, null  // remaining defaults
+                );
+
+                // 4. Build OfflineRecognizerConfig
+                //    Constructor: (featConfig, modelConfig, ...)
+                OfflineRecognizerConfig recognizerConfig = new OfflineRecognizerConfig(
+                        new FeatureConfig(),  // featConfig — default sampleRate=16000
+                        modelConfig,
+                        null, 0, null, 0f, null, null, 0f, 0  // remaining defaults
+                );
 
                 Log.i(TAG, "Creating OfflineRecognizer (SenseVoiceSmall, NNAPI, threads=2)...");
                 recognizer = new OfflineRecognizer(recognizerConfig);
 
-                // 3. Build Silero VAD config — NNAPI + 2 threads
-                SileroVadModelConfig sileroVad = SileroVadModelConfig.builder()
-                        .setModel(vadModelPath)
-                        .setThreshold(0.5f)
-                        .setMinSilenceDurationMs(500)
-                        .setMaxSpeechDurationMs(30000)
-                        .build();
+                // 5. Build Silero VAD config
+                //    SileroVadModelConfig(model, threshold, minSilenceDuration,
+                //      minSpeechDuration, windowSize, maxSpeechDuration)
+                SileroVadModelConfig sileroVad = new SileroVadModelConfig(
+                        vadModelPath,    // model
+                        0.5f,            // threshold
+                        500f,            // minSilenceDuration (ms)
+                        100f,            // minSpeechDuration (ms)
+                        512,             // windowSize
+                        30000f           // maxSpeechDuration (ms)
+                );
 
-                VadModelConfig vadConfig = VadModelConfig.builder()
-                        .setSileroVad(sileroVad)
-                        .setNumThreads(2)
-                        .setSampleRate(SAMPLE_RATE)
-                        .setProvider("nnapi")
-                        .build();
+                // 6. Build VadModelConfig
+                //    Constructor: (sileroVad, sampleRate, numThreads, provider, debug)
+                VadModelConfig vadConfig = new VadModelConfig(
+                        sileroVad,
+                        SAMPLE_RATE,     // sampleRate
+                        2,               // numThreads
+                        "nnapi",         // provider
+                        false            // debug
+                );
 
-                Log.i(TAG, "Creating VoiceActivityDetector (Silero, NNAPI, threads=2)...");
-                vad = new VoiceActivityDetector(vadConfig);
+                Log.i(TAG, "Creating Vad (Silero, NNAPI, threads=2)...");
+                vad = new Vad(vadConfig);
 
-                // 4. Prepare audio buffer size
+                // 7. Prepare audio buffer size
                 audioBufferSize = Math.max(
                         AudioRecord.getMinBufferSize(SAMPLE_RATE,
                                 AudioFormat.CHANNEL_IN_MONO,
                                 AudioFormat.ENCODING_PCM_16BIT),
-                        SAMPLE_RATE * 2  // at least 1 second
+                        SAMPLE_RATE * 2
                 );
 
                 isInitialized.set(true);
@@ -263,7 +300,7 @@ public class SherpaOnnxPlugin extends Plugin {
                 audioRecord.startRecording();
                 Log.i(TAG, "Listening started — 16kHz mono, buffer=" + audioBufferSize);
 
-                // 2. Audio processing loop (runs on background thread)
+                // 2. Audio processing loop (background thread)
                 short[] shortBuffer = new short[512];
                 while (isListening.get()) {
                     int read = audioRecord.read(shortBuffer, 0, shortBuffer.length);
@@ -279,23 +316,24 @@ public class SherpaOnnxPlugin extends Plugin {
                     vad.acceptWaveform(floatBuffer, SAMPLE_RATE);
 
                     // 4. Drain VAD segments → recognize each
-                    while (!vad.isEmpty()) {
+                    while (!vad.empty()) {
                         SpeechSegment segment = vad.front();
                         vad.pop();
 
                         float[] segmentSamples = segment.getSamples();
                         if (segmentSamples.length < SAMPLE_RATE / 4) {
-                            // Skip very short segments (<0.25s) — likely noise
-                            continue;
+                            continue; // skip very short segments (<0.25s)
                         }
 
-                        // 5. Run SenseVoiceSmall on the segment
-                        OfflineRecognizerResult result = recognizer.decode(segmentSamples);
-                        String text = result.getText().trim();
+                        // 5. Create OfflineStream, feed segment, decode
+                        OfflineStream stream = recognizer.createStream();
+                        stream.acceptWaveform(segmentSamples, SAMPLE_RATE);
+                        OfflineRecognizerResult result = recognizer.decode(stream);
+                        stream.release();
 
+                        String text = result.getText().trim();
                         if (!text.isEmpty()) {
                             Log.i(TAG, "Recognized: " + text);
-                            // 6. Post result to JS on main thread
                             final String resultText = text;
                             mainHandler.post(() -> {
                                 JSObject ret = new JSObject();
@@ -307,12 +345,15 @@ public class SherpaOnnxPlugin extends Plugin {
                     }
                 }
 
-                // 7. Flush remaining audio in VAD
+                // 6. Flush remaining audio in VAD
                 vad.flush();
-                while (!vad.isEmpty()) {
+                while (!vad.empty()) {
                     SpeechSegment segment = vad.front();
                     vad.pop();
-                    OfflineRecognizerResult result = recognizer.decode(segment.getSamples());
+                    OfflineStream stream = recognizer.createStream();
+                    stream.acceptWaveform(segment.getSamples(), SAMPLE_RATE);
+                    OfflineRecognizerResult result = recognizer.decode(stream);
+                    stream.release();
                     String text = result.getText().trim();
                     if (!text.isEmpty()) {
                         final String resultText = text;
@@ -325,7 +366,7 @@ public class SherpaOnnxPlugin extends Plugin {
                     }
                 }
 
-                // 8. Stop audio record
+                // 7. Stop audio record
                 if (audioRecord != null) {
                     audioRecord.stop();
                     audioRecord.release();
@@ -349,16 +390,10 @@ public class SherpaOnnxPlugin extends Plugin {
 
     /**
      * stopListening — gracefully stop audio capture + flush VAD.
-     *
-     * The background loop in startListening will exit on the next
-     * iteration because isListening becomes false. Remaining VAD
-     * segments are flushed and recognized before the loop exits.
      */
     @PluginMethod
     public void stopListening(PluginCall call) {
         isListening.set(false);
-        // The background loop handles AudioRecord cleanup, but we
-        // also do it here in case the loop is blocked.
         if (audioRecord != null && audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
             try { audioRecord.stop(); } catch (Exception ignored) {}
         }
@@ -366,9 +401,6 @@ public class SherpaOnnxPlugin extends Plugin {
         call.resolve(new JSObject().put("success", true));
     }
 
-    /**
-     * isInitialized — check if the recognizer is ready.
-     */
     @PluginMethod
     public void isInitialized(PluginCall call) {
         JSObject ret = new JSObject();
@@ -377,9 +409,6 @@ public class SherpaOnnxPlugin extends Plugin {
         call.resolve(ret);
     }
 
-    /**
-     * release — free all native resources (for manual cleanup).
-     */
     @PluginMethod
     public void release(PluginCall call) {
         cleanup();
@@ -398,26 +427,17 @@ public class SherpaOnnxPlugin extends Plugin {
         Log.i(TAG, "Verified: " + path + " (" + (f.length() / 1024 / 1024) + " MB)");
     }
 
-    /**
-     * Recursively copy assets to internal storage. Skips files that
-     * already exist (so subsequent inits are fast).
-     */
     private void copyAssetsToInternal(Context ctx, String assetPath, File outDir) throws IOException {
         outDir.mkdirs();
         AssetManager am = ctx.getAssets();
         String[] children = am.list(assetPath);
-        if (children == null || children.length == 0) {
-            // It's a file, not a directory
-            return;
-        }
+        if (children == null || children.length == 0) return;
         for (String child : children) {
             String childAsset = assetPath + "/" + child;
             String[] subChildren = am.list(childAsset);
             if (subChildren != null && subChildren.length > 0) {
-                // Directory — recurse
                 copyAssetsToInternal(ctx, childAsset, new File(outDir, child));
             } else {
-                // File — copy if not already present
                 File outFile = new File(outDir, child);
                 if (outFile.exists() && outFile.length() > 0) {
                     Log.i(TAG, "SKIP (exists): " + outFile);
@@ -426,7 +446,7 @@ public class SherpaOnnxPlugin extends Plugin {
                 Log.i(TAG, "Copying: " + childAsset + " → " + outFile);
                 try (InputStream in = am.open(childAsset);
                      FileOutputStream out = new FileOutputStream(outFile)) {
-                    byte[] buf = new byte[81920]; // 80KB buffer for large files
+                    byte[] buf = new byte[81920];
                     int len;
                     while ((len = in.read(buf)) > 0) {
                         out.write(buf, 0, len);
