@@ -202,36 +202,49 @@ jobs:
           open('/tmp/probe.wav', 'wb').write(buf.getvalue())
           "
 
-          echo "Probing ${AGNES_BASE_URL}/audio/transcriptions ..."
-          HTTP_CODE=$(curl -s -o /tmp/stt_probe_resp.txt -w "%{http_code}" \
-            -X POST "${AGNES_BASE_URL}/audio/transcriptions" \
-            -H "Authorization: Bearer ${AGNES_API_KEY}" \
-            -F "file=@/tmp/probe.wav" \
-            -F "model=whisper-1" \
-            -F "language=zh")
-          echo "Probe HTTP status: $HTTP_CODE"
-          echo "Probe response (first 300 chars):"
-          head -c 300 /tmp/stt_probe_resp.txt; echo
+          # Try a list of common Whisper model names. Agnes's gateway
+          # accepts /audio/transcriptions but may not have a channel for
+          # 'whisper-1' (we saw 503 'model_not_found' for whisper-1 in
+          # production). Try alternatives until one works or all fail.
+          MODELS_TO_TRY="whisper-1 whisper-large-v3 whisper-large-v2 whisper-turbo openai/whisper-large-v3 openai/whisper-1"
+          FOUND_MODEL=""
+          FOUND_HTTP=""
+          for MODEL in $MODELS_TO_TRY; do
+            echo "Probing ${AGNES_BASE_URL}/audio/transcriptions with model=${MODEL} ..."
+            HTTP_CODE=$(curl -s -o /tmp/stt_probe_resp.txt -w "%{http_code}" \
+              -X POST "${AGNES_BASE_URL}/audio/transcriptions" \
+              -H "Authorization: Bearer ${AGNES_API_KEY}" \
+              -F "file=@/tmp/probe.wav" \
+              -F "model=${MODEL}" \
+              -F "language=zh")
+            echo "  HTTP $HTTP_CODE"
+            echo "  Response: $(head -c 200 /tmp/stt_probe_resp.txt)"
+            # 200 = success (model works, even if it returned empty text for our silence)
+            # 400/422 = model accepted but file rejected (still means model exists)
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "422" ]; then
+              FOUND_MODEL="$MODEL"
+              FOUND_HTTP="$HTTP_CODE"
+              break
+            fi
+            # 503 model_not_found = this model isn't available, try next
+            # 401/403 = auth issue (same key works for chat, so shouldn't happen)
+            # 404/405 = endpoint doesn't exist at all (no point trying more models)
+            if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "405" ]; then
+              echo "Endpoint not found — stopping probe."
+              break
+            fi
+          done
 
-          case "$HTTP_CODE" in
-            200|400|401|403|422|429)
-              # 200 = works. 4xx (except 404/405) = endpoint exists but
-              # rejected our tiny/invalid file or quota — still means the
-              # endpoint is there. Treat as "Agnes supports Whisper".
-              echo "Agnes gateway accepts /audio/transcriptions (HTTP $HTTP_CODE)."
-              echo "use_agnes=true" >> $GITHUB_OUTPUT
-              echo "stt_api_key=$AGNES_API_KEY" >> $GITHUB_OUTPUT
-              echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
-              ;;
-            404|405)
-              echo "::notice::Agnes gateway does NOT support /audio/transcriptions (HTTP $HTTP_CODE). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (e.g. OpenAI, Groq, DeepInfra)."
-              echo "use_agnes=false" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo "::warning::Agnes STT probe returned unexpected HTTP $HTTP_CODE. Skipping — voice input may not work."
-              echo "use_agnes=false" >> $GITHUB_OUTPUT
-              ;;
-          esac
+          if [ -n "$FOUND_MODEL" ]; then
+            echo "✅ Agnes gateway supports Whisper with model '${FOUND_MODEL}' (HTTP $FOUND_HTTP)."
+            echo "use_agnes=true" >> $GITHUB_OUTPUT
+            echo "stt_api_key=$AGNES_API_KEY" >> $GITHUB_OUTPUT
+            echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
+            echo "stt_model=$FOUND_MODEL" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::Agnes gateway does NOT have a working Whisper model (tried: $MODELS_TO_TRY). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (OpenAI / Groq / DeepInfra)."
+            echo "use_agnes=false" >> $GITHUB_OUTPUT
+          fi
 
       # ---------- 5c. Build the web bundle (Vite) ----------
       # Injects AGNES_* and (probed or user-set) STT_* credentials so
@@ -250,7 +263,7 @@ jobs:
           VITE_STT_BACKEND_URL: ${{ secrets.VITE_STT_BACKEND_URL }}
           VITE_STT_API_KEY: ${{ secrets.VITE_STT_API_KEY || (steps.stt_probe.outputs.use_agnes == 'true' && steps.stt_probe.outputs.stt_api_key) }}
           VITE_STT_BASE_URL: ${{ secrets.VITE_STT_BASE_URL || (steps.stt_probe.outputs.use_agnes == 'true' && steps.stt_probe.outputs.stt_base_url) }}
-          VITE_STT_MODEL: ${{ secrets.VITE_STT_MODEL }}
+          VITE_STT_MODEL: ${{ secrets.VITE_STT_MODEL || steps.stt_probe.outputs.stt_model }}
           # Supabase (optional — for history & quota; works without on APK).
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
