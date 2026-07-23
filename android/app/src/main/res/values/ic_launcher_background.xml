@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon background — matches the gradient's midpoint color so the
+  launcher icon looks cohesive even on devices that mask the foreground.
+  The actual gradient is baked into ic_launcher.png / ic_launcher_round.png
+  for non-adaptive launchers.
+-->
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <color name="ic_launcher_background">#0EA5E9</color>
 </resources>
