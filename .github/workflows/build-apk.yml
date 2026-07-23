@@ -150,25 +150,23 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install --no-audit --no-fund
 
-      # ---------- 5b. Probe whether Agnes gateway supports Whisper STT ----------
-      # Agnes's /chat/completions is verified working, but .env.example says
-      # "Agnes does NOT expose a Whisper endpoint". The backend's config.py
-      # disagrees and defaults STT to the Agnes gateway. We resolve the
-      # ambiguity empirically: send a real (tiny) audio file to
-      # /audio/transcriptions with the real AGNES_API_KEY.
+      # ---------- 5b. Probe Agnes for a working speech-to-text model ----------
+      # Agnes's /chat/completions is verified working. The user confirmed
+      # Agnes DOES have a speech-recognition model — we just need to find
+      # its name. Strategy:
       #
-      #   • If 200 → Agnes DOES support Whisper. Inject VITE_STT_API_KEY =
-      #     AGNES_API_KEY and VITE_STT_BASE_URL = AGNES_BASE_URL so the APK
-      #     gets voice input for free (no extra secrets needed).
-      #   • If 401/403 → endpoint exists but key rejected (shouldn't happen
-      #     since the same key works for chat). Treat as "supports".
-      #   • If 404/405 → Agnes does NOT support Whisper. Skip — the APK's
-      #     mic button will show "未配置" until separate STT secrets are set.
-      #   • If network error → log a warning and skip (don't fail the build).
-      #
-      # The result is exported as $VITE_STT_API_KEY / $VITE_STT_BASE_URL
-      # env vars for the next step.
-      - name: 🎙️ Probe Agnes Whisper support
+      #   1. GET /v1/models with the real AGNES_API_KEY to list ALL models
+      #      available on this account.
+      #   2. Filter to models whose id contains audio/speech/whisper/voice/
+      #      asr/listen/transcrib — those are the STT candidates.
+      #   3. Also add a hardcoded fallback list of common Whisper names in
+      #      case /models doesn't list audio models explicitly.
+      #   4. For each candidate, POST a tiny WAV to /v1/audio/transcriptions
+      #      and look for 200/400/422 (model accepted). The first one that
+      #      returns a non-503 status wins.
+      #   5. Export the winning model as VITE_STT_MODEL + inject the Agnes
+      #      key/URL as VITE_STT_API_KEY / VITE_STT_BASE_URL.
+      - name: 🎙️ Probe Agnes speech-to-text support
         id: stt_probe
         env:
           AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
@@ -202,47 +200,100 @@ jobs:
           open('/tmp/probe.wav', 'wb').write(buf.getvalue())
           "
 
-          # Try a list of common Whisper model names. Agnes's gateway
-          # accepts /audio/transcriptions but may not have a channel for
-          # 'whisper-1' (we saw 503 'model_not_found' for whisper-1 in
-          # production). Try alternatives until one works or all fail.
-          MODELS_TO_TRY="whisper-1 whisper-large-v3 whisper-large-v2 whisper-turbo openai/whisper-large-v3 openai/whisper-1"
+          echo "=== Step 1: List all models from Agnes GET /v1/models ==="
+          MODEL_IDS=$(python3 << 'PYEOF'
+          import json, os, urllib.request, sys
+          api_key = os.environ["AGNES_API_KEY"]
+          base = os.environ["AGNES_BASE_URL"].rstrip("/")
+          req = urllib.request.Request(
+              f"{base}/models",
+              headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  data = json.loads(resp.read().decode("utf-8"))
+          except Exception as e:
+              print(f"WARNING: could not list models: {e}", file=sys.stderr)
+              sys.exit(0)
+          models = data.get("data", []) if isinstance(data, dict) else data
+          if not isinstance(models, list):
+              print(f"WARNING: unexpected /models shape: {str(data)[:200]}", file=sys.stderr)
+              sys.exit(0)
+          ids = []
+          for m in models:
+              mid = m.get("id") if isinstance(m, dict) else str(m)
+              if mid:
+                  ids.append(mid)
+          # Print all ids to stderr for visibility
+          print(f"ALL_MODELS ({len(ids)}): {', '.join(ids)}", file=sys.stderr)
+          # Print space-separated ids to stdout
+          print(" ".join(ids))
+          PYEOF
+          )
+          echo "All models: $MODEL_IDS"
+          echo ""
+
+          echo "=== Step 2: Filter to audio/speech/whisper/voice/asr candidates ==="
+          AUDIO_CANDIDATES=""
+          for MID in $MODEL_IDS; do
+            LOWER=$(echo "$MID" | tr '[:upper:]' '[:lower:]')
+            case "$LOWER" in
+              *whisper*|*audio*|*speech*|*voice*|*asr*|*transcrib*|*listen*|*stt*)
+                AUDIO_CANDIDATES="$AUDIO_CANDIDATES $MID"
+                echo "  + $MID (audio-like)"
+                ;;
+            esac
+          done
+          # Hardcoded fallback list — common OpenAI/compatible Whisper names,
+          # in case /models doesn't list audio models explicitly. Order matters:
+          # most-likely-first.
+          FALLBACK_MODELS="whisper-1 whisper-large-v3 whisper-large-v2 whisper-turbo whisper-1-tongdian audio-transcription agnes-asr agnes-whisper"
+          echo "Fallback candidates: $FALLBACK_MODELS"
+          echo ""
+
+          # Combined list: audio-like from /models first, then fallbacks
+          # (dedup not strictly needed — if a model works, we stop on first hit)
+          MODELS_TO_TRY="$AUDIO_CANDIDATES $FALLBACK_MODELS"
+          echo "=== Step 3: Probing /v1/audio/transcriptions with each candidate ==="
           FOUND_MODEL=""
           FOUND_HTTP=""
           for MODEL in $MODELS_TO_TRY; do
-            echo "Probing ${AGNES_BASE_URL}/audio/transcriptions with model=${MODEL} ..."
+            [ -z "$MODEL" ] && continue
+            echo "Trying model='${MODEL}' ..."
             HTTP_CODE=$(curl -s -o /tmp/stt_probe_resp.txt -w "%{http_code}" \
               -X POST "${AGNES_BASE_URL}/audio/transcriptions" \
               -H "Authorization: Bearer ${AGNES_API_KEY}" \
               -F "file=@/tmp/probe.wav" \
               -F "model=${MODEL}" \
               -F "language=zh")
-            echo "  HTTP $HTTP_CODE"
-            echo "  Response: $(head -c 200 /tmp/stt_probe_resp.txt)"
+            RESP=$(head -c 200 /tmp/stt_probe_resp.txt)
+            echo "  HTTP $HTTP_CODE — $RESP"
             # 200 = success (model works, even if it returned empty text for our silence)
             # 400/422 = model accepted but file rejected (still means model exists)
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "422" ]; then
               FOUND_MODEL="$MODEL"
               FOUND_HTTP="$HTTP_CODE"
+              echo "  ✅ Model '${MODEL}' accepted!"
               break
             fi
-            # 503 model_not_found = this model isn't available, try next
-            # 401/403 = auth issue (same key works for chat, so shouldn't happen)
+            # 503 model_not_found = this specific model isn't available, try next
+            # 401/403 = auth issue (shouldn't happen with the real key)
             # 404/405 = endpoint doesn't exist at all (no point trying more models)
             if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "405" ]; then
-              echo "Endpoint not found — stopping probe."
+              echo "  Endpoint /audio/transcriptions not found — stopping probe."
               break
             fi
           done
 
+          echo ""
           if [ -n "$FOUND_MODEL" ]; then
-            echo "✅ Agnes gateway supports Whisper with model '${FOUND_MODEL}' (HTTP $FOUND_HTTP)."
+            echo "✅ Agnes gateway supports speech-to-text with model '${FOUND_MODEL}' (HTTP $FOUND_HTTP)."
             echo "use_agnes=true" >> $GITHUB_OUTPUT
             echo "stt_api_key=$AGNES_API_KEY" >> $GITHUB_OUTPUT
             echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
             echo "stt_model=$FOUND_MODEL" >> $GITHUB_OUTPUT
           else
-            echo "::notice::Agnes gateway does NOT have a working Whisper model (tried: $MODELS_TO_TRY). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (OpenAI / Groq / DeepInfra)."
+            echo "::notice::Agnes gateway has no working speech-to-text model (tried: $MODELS_TO_TRY). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (OpenAI / Groq / DeepInfra)."
             echo "use_agnes=false" >> $GITHUB_OUTPUT
           fi
 
