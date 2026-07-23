@@ -23,11 +23,18 @@ const STT_BACKEND_URL = (import.meta.env.VITE_STT_BACKEND_URL ?? "").trim();
 // exposes an OpenAI-compatible /audio/transcriptions endpoint). This mirrors
 // the backend's config.py logic, so the APK can do STT out-of-the-box with
 // the same credentials that power translation — no extra secrets required.
-const AGNES_API_KEY = import.meta.env.VITE_AGNES_API_KEY ?? "";
-const AGNES_BASE_URL = (import.meta.env.VITE_AGNES_BASE_URL ?? "").replace(/\/$/, "");
-const STT_API_KEY = import.meta.env.VITE_STT_API_KEY ?? AGNES_API_KEY;
-const STT_BASE_URL = (import.meta.env.VITE_STT_BASE_URL ?? AGNES_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
-const STT_MODEL = import.meta.env.VITE_STT_MODEL ?? "whisper-1";
+//
+// IMPORTANT: use explicit `||` fallback (not `??`) because Vite inlines
+// unset `import.meta.env.VITE_*` as the empty string `""`, which is NOT
+// nullish, so `??` would not fall through. `||` treats `""` as falsy and
+// falls through correctly.
+const AGNES_API_KEY = import.meta.env.VITE_AGNES_API_KEY || "";
+const AGNES_BASE_URL = (import.meta.env.VITE_AGNES_BASE_URL || "").replace(/\/$/, "");
+const STT_API_KEY = import.meta.env.VITE_STT_API_KEY || AGNES_API_KEY;
+const STT_BASE_URL = (
+  import.meta.env.VITE_STT_BASE_URL || AGNES_BASE_URL || "https://api.openai.com/v1"
+).replace(/\/$/, "");
+const STT_MODEL = import.meta.env.VITE_STT_MODEL || "whisper-1";
 
 // Bias the Whisper decoder toward Cantonese colloquial words (嘅/咗/咁/
 // 嘢/點解/唔該/冇/咩), Taiwanese Mandarin phrasing, and VFX/film jargon

@@ -55,6 +55,73 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Use the GITHUB_TOKEN (auto-provided) so the version-bump commit
+          # in step 1b can be pushed back to main.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------- 1b. Compute version for this build ----------
+      # Reads versionName + versionCode from build.gradle. For push-to-main
+      # builds, we append the GitHub run number as a build metadata suffix
+      # (e.g. 1.0.1+123) so every build has a unique, monotonically-
+      # increasing version without writing back to build.gradle (which
+      # would cause an infinite build loop).
+      #
+      # Tag-triggered builds (v1.2.3) use the tag directly as versionName.
+      # Manual dispatch uses the user-provided tag or auto-bumps patch.
+      - name: 🔢 Compute version
+        id: version
+        run: |
+          set -e
+          GRADLE="android/app/build.gradle"
+
+          # Read current versionName + versionCode from build.gradle
+          CURRENT_NAME=$(grep -E '^\s*versionName' "$GRADLE" | head -1 | sed -E 's/.*versionName "([^"]+)".*/\1/')
+          CURRENT_CODE=$(grep -E '^\s*versionCode' "$GRADLE" | head -1 | sed -E 's/.*versionCode ([0-9]+).*/\1/')
+          echo "Current build.gradle: versionName=$CURRENT_NAME versionCode=$CURRENT_CODE"
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Tag push (v1.2.3) — use the tag as versionName, bump versionCode
+            # by the GitHub run number so Android sees it as a new release.
+            NEW_NAME="${GITHUB_REF#refs/tags/v}"
+            NEW_CODE=$((CURRENT_CODE + 1))
+            IS_PRERELEASE="false"
+            echo "Tag build: versionName=$NEW_NAME versionCode=$NEW_CODE"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_INPUT="${{ inputs.tag_name }}"
+            if [[ "$TAG_INPUT" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              NEW_NAME="${TAG_INPUT#v}"
+              NEW_CODE=$((CURRENT_CODE + 1))
+            else
+              # Auto-bump patch version
+              NEW_NAME=$(echo "$CURRENT_NAME" | awk -F. -v OFS=. '{$3++; print}')
+              NEW_CODE=$((CURRENT_CODE + 1))
+            fi
+            IS_PRERELEASE="${{ inputs.is_prerelease }}"
+            echo "Manual build: versionName=$NEW_NAME versionCode=$NEW_CODE"
+          else
+            # Push to main — use current versionName + GitHub run number
+            # as versionCode (monotonically increasing, no write-back needed).
+            # Version tag is v<versionName> (e.g. v1.0.1) — if two pushes
+            # happen with the same versionName, softprops/action-gh-release
+            # will UPDATE the existing release rather than create a new one,
+            # so the Releases page always shows the latest build.
+            NEW_NAME="$CURRENT_NAME"
+            NEW_CODE="${{ github.run_number }}"
+            IS_PRERELEASE="true"
+            echo "Push build: versionName=$NEW_NAME versionCode=$NEW_CODE (run number)"
+          fi
+
+          # Write the new versionCode back to build.gradle for this build
+          # (the change is NOT committed back, so no infinite loop).
+          sed -i -E "s/(\s*versionCode )[0-9]+/\1$NEW_CODE/" "$GRADLE"
+          echo "Updated build.gradle for this build:"
+          grep -E '^\s*version(Code|Name)' "$GRADLE"
+
+          # Expose to later steps
+          echo "name=$NEW_NAME" >> $GITHUB_OUTPUT
+          echo "code=$NEW_CODE" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_NAME" >> $GITHUB_OUTPUT
+          echo "prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
 
       # ---------- 2. Setup JDK (needed before Android SDK) ----------
       - name: ☕ Setup JDK 17
@@ -240,24 +307,15 @@ jobs:
           echo "=== ALL APK CHECKS PASSED ==="
 
       # ---------- 13. Resolve the tag name for this release ----------
+      # Tag format is always v<version> (e.g. v1.0.2) — no short-SHA suffix —
+      # so GitHub Releases sorts by semantic version and the latest build
+      # appears at the top. Pre-release flag comes from step 1b.
       - name: 🏷️ Compute release tag
         id: tag
         run: |
-          # Pull versionName from build.gradle so the APK filename matches what's inside.
-          VERSION_NAME=$(grep -E '^\s*versionName' android/app/build.gradle | head -1 | sed -E 's/.*versionName "([^"]+)".*/\1/')
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
-            echo "prerelease=${{ inputs.is_prerelease }}" >> $GITHUB_OUTPUT
-          else
-            # push to main → tag with version + short SHA (e.g. v1.0.1-abc1234)
-            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "name=v${VERSION_NAME}-${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          fi
-          echo "version=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "name=${{ steps.version.outputs.tag }}" >> $GITHUB_OUTPUT
+          echo "version=${{ steps.version.outputs.name }}" >> $GITHUB_OUTPUT
+          echo "prerelease=${{ steps.version.outputs.prerelease }}" >> $GITHUB_OUTPUT
 
       # ---------- 14. Stage APK with a clean filename ----------
       - name: 📝 Stage APK artifact
@@ -267,7 +325,7 @@ jobs:
           if [ -z "$SRC" ]; then
             echo "::error::No APK found"; exit 1
           fi
-          DST="staging/linguaverse-${{ steps.tag.outputs.version }}-${GITHUB_SHA::7}.apk"
+          DST="staging/linguaverse-${{ steps.tag.outputs.version }}.apk"
           cp "$SRC" "$DST"
           echo "APK_PATH=$DST" >> $GITHUB_ENV
           ls -la staging/
@@ -282,6 +340,11 @@ jobs:
           retention-days: 30
 
       # ---------- 16. Publish to GitHub Releases ----------
+      # softprops/action-gh-release creates the tag if it doesn't exist,
+      # or updates the release if the tag already exists. Setting
+      # `make_latest: true` tells GitHub to mark this as the "latest"
+      # release (the one shown on the repo homepage) — so the newest
+      # build is always pinned to the top of the Releases page.
       - name: 🚀 Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
@@ -289,17 +352,19 @@ jobs:
           name: 译境 LinguaVerse ${{ steps.tag.outputs.version }}
           files: staging/*.apk
           prerelease: ${{ steps.tag.outputs.prerelease }}
+          make_latest: true
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
             ## 译境 LinguaVerse ${{ steps.tag.outputs.version }}
 
             **Build source:** `${{ github.ref_name }}` @ ${{ github.sha }}
+            **versionCode:** ${{ steps.version.outputs.code }}
 
             ### What's inside
             - Android APK (Capacitor 6 + Vite + React 18)
             - Translation: direct Agnes `agnes-2.0-flash` call (key baked in)
-            - Voice input: MediaRecorder → `/api/v1/stt` → textarea
+            - Voice input: MediaRecorder → Agnes Whisper `/audio/transcriptions` → textarea
             - Industrial-minimalist UI
 
             ### Installation
