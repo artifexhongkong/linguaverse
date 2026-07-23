@@ -105,9 +105,13 @@ jobs:
             # happen with the same versionName, softprops/action-gh-release
             # will UPDATE the existing release rather than create a new one,
             # so the Releases page always shows the latest build.
+            #
+            # Marked as NOT pre-release so GitHub's "Latest" pointer tracks
+            # the newest build automatically (GitHub never auto-promotes a
+            # pre-release to Latest).
             NEW_NAME="$CURRENT_NAME"
             NEW_CODE="${{ github.run_number }}"
-            IS_PRERELEASE="true"
+            IS_PRERELEASE="false"
             echo "Push build: versionName=$NEW_NAME versionCode=$NEW_CODE (run number)"
           fi
 
