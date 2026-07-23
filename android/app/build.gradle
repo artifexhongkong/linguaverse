@@ -7,8 +7,8 @@ android {
         applicationId "ai.linguaverse.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +16,32 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    // ===== Release signing config =====
+    // Keystore is decoded from the ANDROID_KEYSTORE_BASE64 secret at build time
+    // (see .github/workflows/build-apk.yml). When running `gradlew assembleRelease`
+    // locally without the env vars set, the release build will be unsigned (same
+    // as before) so dev workflow is not affected.
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("KEYSTORE_PATH")
+            def ksPass = System.getenv("KEYSTORE_PASSWORD")
+            def ksAlias = System.getenv("KEY_ALIAS")
+            def kPass = System.getenv("KEY_PASSWORD")
+            if (ksPath != null && new File(ksPath).exists()) {
+                storeFile file(ksPath)
+                storePassword ksPass
+                keyAlias ksAlias
+                keyPassword kPass
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 }
