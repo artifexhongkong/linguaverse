@@ -91,15 +91,42 @@ APK 輸出路徑：`android/app/build/outputs/apk/release/app-release-unsigned.a
 
 ### 雲端自動建置（推薦）
 
-只要 push 到 `main` 分支，GitHub Actions workflow 會自動：
-1. 用 `AGNES_API_KEY` / `AGNES_BASE_URL` / `AGNES_MODEL` secrets 建置 web bundle
-2. 同步到 Android 專案並執行 `gradlew assembleRelease`
-3. 自動建立 GitHub Release 並上傳 APK
+只要 push 到 `main` 分支，GitHub Actions workflow（`.github/workflows/build-apk.yml`）會自動：
 
-需要在倉庫 Settings → Secrets and variables → Actions 加入：
-- `AGNES_API_KEY`
-- `AGNES_BASE_URL`（值：`https://apihub.agnes-ai.com/v1`）
-- `AGNES_MODEL`（值：`agnes-2.0-flash`）
+1. 安裝 npm 依賴並用 Vite 建置 web bundle（注入下列 Vite_* secrets）
+2. 執行 `npx cap sync android` 同步到 Android 專案
+3. 解碼 `ANDROID_KEYSTORE_BASE64` 並以 release keystore 簽署 APK
+4. 自動建立 GitHub Release（tag 為 `nightly-<short-sha>`）並上傳已簽署的 APK
+5. 若推送的是 `v*` tag，會建立正式 Release；也可在 Actions → Run workflow 手動觸發
+
+#### 必須設定的 Secrets（Settings → Secrets and variables → Actions）
+
+**App 功能（前端注入）**
+- `VITE_AGNES_API_KEY`
+- `VITE_AGNES_BASE_URL`（`https://apihub.agnes-ai.com/v1`）
+- `VITE_AGNES_MODEL`（`agnes-2.0-flash`）
+- `VITE_SUPABASE_URL`（可選，配額與歷史紀錄功能）
+- `VITE_SUPABASE_ANON_KEY`（可選）
+
+**語音輸入（STT）— 二選一**
+- 後端代理模式（推薦）：`VITE_STT_BACKEND_URL` 指向你的 FastAPI `/api/v1/stt`，後端持有 Whisper key
+- 直連模式：`VITE_STT_API_KEY` + `VITE_STT_BASE_URL`（可選 `VITE_STT_MODEL`，預設 `whisper-1`）
+
+**APK 簽署**
+- `ANDROID_KEYSTORE_BASE64` — `base64 < release.keystore` 的輸出
+- `KEYSTORE_PASSWORD`
+- `KEY_ALIAS`
+- `KEY_PASSWORD`
+
+> 若未設定 signing secrets，workflow 會輸出未簽署 APK 並照常發佈到 Releases，可用於內部測試。
+
+#### 建立簽署 Keystore（一次性）
+
+```bash
+keytool -genkey -v -keystore release.keystore -alias linguaverse \
+  -keyalg RSA -keysize 2048 -validity 10000
+base64 -w 0 release.keystore > keystore.b64   # 內容貼到 ANDROID_KEYSTORE_BASE64 secret
+```
 
 ## 下載
 
