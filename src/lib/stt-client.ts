@@ -2,17 +2,24 @@
  * Speech-to-Text client.
  *
  * Records audio from the device microphone via the browser MediaRecorder
- * API, then transcribes it via an OpenAI-compatible Whisper endpoint.
+ * API, then transcribes it.
+ *
+ * Two modes (auto-selected based on env vars):
+ *   1. **Backend proxy mode** (preferred): POST the audio Blob to
+ *      VITE_STT_BACKEND_URL (e.g. https://api.example.com/api/v1/stt).
+ *      The backend holds the Whisper API key — never exposed to the client.
+ *   2. **Direct mode** (fallback): call the Whisper API directly from the
+ *      device using VITE_STT_API_KEY / VITE_STT_BASE_URL. Useful for the
+ *      Android APK build where there is no backend.
  *
  * Tuned for Cantonese (HK), Taiwanese Mandarin, and code-mixed
  * Chinese-English via a dialect-biasing prompt.
- *
- * NOTE: This client calls the Whisper API directly from the device.
- * The Agnes gateway does NOT expose Whisper — you must configure
- * VITE_STT_API_KEY / VITE_STT_BASE_URL to point at an OpenAI-compatible
- * provider (OpenAI itself, Groq, DeepInfra, etc.).
  */
 
+// Backend proxy mode — preferred when available (keeps API key server-side)
+const STT_BACKEND_URL = (import.meta.env.VITE_STT_BACKEND_URL ?? "").trim();
+
+// Direct mode — only used when no backend is configured
 const STT_API_KEY = import.meta.env.VITE_STT_API_KEY ?? "";
 const STT_BASE_URL = (import.meta.env.VITE_STT_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
 const STT_MODEL = import.meta.env.VITE_STT_MODEL ?? "whisper-1";
@@ -35,8 +42,22 @@ export interface STTResult {
   language?: string;
 }
 
+/**
+ * Returns true if STT is usable — either via the backend proxy or via
+ * direct-mode credentials.
+ */
 export function isSTTConfigured(): boolean {
-  return Boolean(STT_API_KEY && STT_BASE_URL);
+  return Boolean(STT_BACKEND_URL) || Boolean(STT_API_KEY && STT_BASE_URL);
+}
+
+/**
+ * Returns a human-readable label for the active STT mode (used by the UI
+ * for tooltip / accessibility).
+ */
+export function sttMode(): "backend" | "direct" | "none" {
+  if (STT_BACKEND_URL) return "backend";
+  if (STT_API_KEY && STT_BASE_URL) return "direct";
+  return "none";
 }
 
 /**
@@ -118,16 +139,24 @@ export async function startRecording(): Promise<RecordingController> {
 }
 
 /**
- * Transcribe an audio Blob via the Whisper API.
- * The dialect prompt is injected to improve accuracy on Cantonese,
- * Taiwanese Mandarin, and VFX jargon.
+ * Transcribe an audio Blob.
+ *
+ * If VITE_STT_BACKEND_URL is set, POSTs the Blob as multipart/form-data
+ * to the backend `/api/v1/stt` endpoint — the backend holds the Whisper
+ * API key, so nothing sensitive is exposed to the client.
+ *
+ * Otherwise, calls the Whisper API directly (VITE_STT_API_KEY /
+ * VITE_STT_BASE_URL). Useful for the APK build where there is no backend.
+ *
+ * The dialect prompt is injected in both paths to improve accuracy on
+ * Cantonese, Taiwanese Mandarin, and VFX jargon.
  */
 export async function transcribe(audio: Blob): Promise<STTResult> {
   if (!isSTTConfigured()) {
     throw new Error("語音識別未配置，請聯繫管理員");
   }
 
-  // Pick a sensible filename based on the blob's mime type so the Whisper
+  // Pick a sensible filename based on the blob's mime type so the upstream
   // API can detect the format correctly.
   const ext = audio.type.includes("webm")
     ? "webm"
@@ -138,6 +167,56 @@ export async function transcribe(audio: Blob): Promise<STTResult> {
     : "wav";
   const filename = `recording.${ext}`;
 
+  // ----- Path A: Backend proxy mode (preferred) -----
+  // Backend already injects the dialect prompt + language hint, so the
+  // client only needs to send the audio file.
+  if (STT_BACKEND_URL) {
+    const form = new FormData();
+    form.append("file", audio, filename);
+
+    let resp: Response;
+    try {
+      resp = await fetch(STT_BACKEND_URL, {
+        method: "POST",
+        body: form,
+        // Do NOT set Content-Type — the browser will set the multipart
+        // boundary for us.
+      });
+    } catch (err) {
+      console.error("[stt/backend] network error:", err);
+      throw new Error("無法連接語音識別服務，請檢查網路");
+    }
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.error(`[stt/backend] HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error("語音識別服務認證失敗");
+      }
+      if (resp.status === 413) {
+        throw new Error("錄音檔案過大，請縮短錄音時間");
+      }
+      if (resp.status === 429) {
+        throw new Error("語音識別請求過於頻繁，請稍後再試");
+      }
+      throw new Error("語音識別失敗，請稍後再試");
+    }
+
+    const data = await resp.json();
+    const text = (data.text ?? "").trim();
+    if (!text) {
+      throw new Error("未能識別任何語音內容，請再試一次");
+    }
+
+    return {
+      text,
+      model: data.model ?? "whisper-1",
+      duration: data.duration,
+      language: data.language,
+    };
+  }
+
+  // ----- Path B: Direct mode (fallback for APK) -----
   const form = new FormData();
   form.append("file", audio, filename);
   form.append("model", STT_MODEL);
@@ -158,7 +237,7 @@ export async function transcribe(audio: Blob): Promise<STTResult> {
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
-    console.error(`[stt] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    console.error(`[stt/direct] HTTP ${response.status}: ${errText.slice(0, 200)}`);
     if (response.status === 401 || response.status === 403) {
       throw new Error("語音識別服務認證失敗");
     }

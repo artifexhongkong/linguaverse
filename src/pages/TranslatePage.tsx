@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { LANGUAGES, getLanguage } from "../lib/languages";
 import { scheduleTranslationStream, type TranslationOutput } from "../service/translator-scheduler";
 import { insertTranslation, incrementQuota } from "../lib/supabase";
 import { BottomSheet, SheetItem } from "../components/BottomSheet";
-import { startRecording, transcribe, isSTTConfigured, type RecordingController } from "../lib/stt-client";
+import { VoiceInput } from "../components/VoiceInput";
 
 interface TranslatePageProps {
   sourceLang: string;
@@ -25,9 +25,7 @@ export function TranslatePage({
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const recordingRef = useRef<RecordingController | null>(null);
+  const [voiceActive, setVoiceActive] = useState(false);
 
   const charLimit = 500;
   const remaining = Math.max(quotaLimit - quotaUsed, 0);
@@ -87,54 +85,20 @@ export function TranslatePage({
     setInput(""); setResult(null); setStreamingText(""); setSaved(false); setCopied(false);
   };
 
-  const handleMicToggle = async () => {
-    // If already recording → stop and transcribe
-    if (recording && recordingRef.current) {
-      setRecording(false);
-      setTranscribing(true);
-      try {
-        const blob = await recordingRef.current.stop();
-        recordingRef.current = null;
-        if (blob.size === 0) {
-          onToast("錄音失敗");
-          return;
-        }
-        const sttResult = await transcribe(blob);
-        if (sttResult.text) {
-          setInput((prev) => {
-            const merged = prev ? `${prev} ${sttResult.text}`.slice(0, charLimit) : sttResult.text.slice(0, charLimit);
-            return merged;
-          });
-          onToast("已識別語音內容");
-        } else {
-          onToast("未能識別任何語音內容");
-        }
-      } catch (err) {
-        onToast(err instanceof Error ? err.message : "語音識別失敗");
-      } finally {
-        setTranscribing(false);
-      }
-      return;
-    }
-    // Start recording
-    if (!isSTTConfigured()) {
-      onToast("語音識別未配置");
-      return;
-    }
-    try {
-      recordingRef.current = await startRecording();
-      setRecording(true);
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : "無法啟動麥克風");
-    }
+  // VoiceInput callback — append the recognised text to the input box
+  const handleVoiceTranscribed = (text: string) => {
+    setInput((prev) => {
+      const base = prev.trim();
+      const merged = base ? `${base} ${text}` : text;
+      return merged.slice(0, charLimit);
+    });
+    // Clear any previous result so the user sees the new text fresh
+    if (result) { setResult(null); setSaved(false); setCopied(false); }
   };
 
-  const handleCancelRecording = () => {
-    if (recordingRef.current) {
-      recordingRef.current.cancel();
-      recordingRef.current = null;
-    }
-    setRecording(false);
+  // VoiceInput state changes — toggles the textarea placeholder
+  const handleVoiceStateChange = (s: "idle" | "recording" | "transcribing") => {
+    setVoiceActive(s !== "idle");
   };
 
   const displayText = result ? result.text : (loading && streamingText ? streamingText : "");
@@ -166,7 +130,7 @@ export function TranslatePage({
       <div className="input-card">
         <textarea
           className="translate-textarea"
-          placeholder={recording ? "正在錄音…再次點擊麥克風結束並識別" : transcribing ? "語音識別中…" : "輸入要翻譯的文字…"}
+          placeholder={voiceActive ? "正在錄音…" : "輸入要翻譯的文字，或點擊麥克風語音輸入…"}
           value={input}
           onChange={(e) => {
             const val = e.target.value.slice(0, charLimit);
@@ -180,36 +144,12 @@ export function TranslatePage({
             {input.length} / {charLimit}
           </span>
           <div className="input-actions">
-            <button
-              className={`icon-btn mic-btn ${recording ? "recording" : ""} ${transcribing ? "transcribing" : ""}`}
-              onClick={handleMicToggle}
-              disabled={transcribing || loading}
-              aria-label={recording ? "停止錄音" : "語音輸入"}
-              title={recording ? "停止錄音" : "語音輸入"}
-            >
-              {transcribing ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 12a9 9 0 11-6.219-8.56" />
-                </svg>
-              ) : recording ? (
-                <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2a3 3 0 00-3 3v7a3 3 0 006 0V5a3 3 0 00-3-3z" />
-                  <path d="M19 10v2a7 7 0 01-14 0v-2" />
-                  <path d="M12 19v3" />
-                </svg>
-              )}
-            </button>
-            {recording && (
-              <button className="icon-btn" onClick={handleCancelRecording} aria-label="取消錄音">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            )}
+            <VoiceInput
+              onTranscribed={handleVoiceTranscribed}
+              onToast={onToast}
+              onStateChange={handleVoiceStateChange}
+              disabled={loading}
+            />
             <button className="icon-btn" onClick={handleClear} disabled={!input && !result} aria-label="清除">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 6L6 18M6 6l12 12" />

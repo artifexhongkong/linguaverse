@@ -353,25 +353,205 @@
 .icon-btn:disabled { opacity: 0.35; }
 .icon-btn svg { width: 16px; height: 16px; }
 
-/* Mic button — special states for recording / transcribing */
-.icon-btn.mic-btn { color: var(--primary); }
-.icon-btn.mic-btn.recording {
-  background: #FEE2E2;
+/* ============================================================
+   VoiceInput — premium industrial-minimalist mic button
+   ============================================================
+   States: idle (hairline border + hover glow), recording (red breathing
+   pulse + live timer), transcribing (blue spinner + label).
+   ============================================================ */
+
+.voice-input-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-input-btn {
+  /* Sizing */
+  --btn-size: 38px;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  isolation: isolate; /* contain the pulse layer */
+
+  /* Default appearance — hairline border, transparent fill */
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong, #D1D5DB);
+  cursor: pointer;
+  transition: color 0.28s var(--ease-out, ease),
+              border-color 0.28s var(--ease-out, ease),
+              background 0.28s var(--ease-out, ease),
+              box-shadow 0.32s var(--ease-out, ease),
+              transform 0.18s var(--ease-out, ease);
+}
+
+/* Idle hover — soft cyan micro-glow on the border (微光) */
+.voice-input-btn.state-idle:hover:not(:disabled) {
+  color: var(--primary, #3B5BDB);
+  border-color: var(--primary, #3B5BDB);
+  box-shadow:
+    0 0 0 4px rgba(59, 91, 219, 0.10),
+    0 0 14px rgba(59, 91, 219, 0.18);
+}
+
+/* Pressed */
+.voice-input-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* Disabled */
+.voice-input-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Icon sizing */
+.voice-input-icon {
+  width: 17px;
+  height: 17px;
+  position: relative;
+  z-index: 2;
+  transition: opacity 0.2s ease;
+}
+
+/* ----- Recording state ----- */
+.voice-input-btn.state-recording {
+  background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow:
+    0 6px 16px rgba(220, 38, 38, 0.35),
+    0 0 0 0 rgba(239, 68, 68, 0.5);
+  animation: voice-breathe 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* The breathing pulse layer (a separate ::before-style span inside the
+   button so we can animate it independently of the icon) */
+.voice-input-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.voice-input-btn.state-recording .voice-input-pulse {
+  opacity: 1;
+  background: radial-gradient(circle, rgba(255,255,255,0.0) 60%, rgba(239,68,68,0.5) 100%);
+  animation: voice-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes voice-breathe {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 6px 16px rgba(220, 38, 38, 0.35),
+      0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow:
+      0 8px 22px rgba(220, 38, 38, 0.45),
+      0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes voice-ring {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  100% { transform: scale(1.8); opacity: 0;   }
+}
+
+/* Live timer shown next to the icon while recording */
+.voice-input-timer {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   color: #DC2626;
-  animation: mic-pulse 1.2s ease-in-out infinite;
+  background: #fff;
+  border: 1px solid #FCA5A5;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.18);
 }
-.icon-btn.mic-btn.transcribing {
-  background: var(--primary-tint);
-  color: var(--primary);
-  animation: mic-spin 1s linear infinite;
+
+/* ----- Transcribing state ----- */
+.voice-input-btn.state-transcribing {
+  background: var(--primary-tint, #EFF3FF);
+  border-color: var(--primary, #3B5BDB);
+  color: var(--primary, #3B5BDB);
+  cursor: wait;
 }
-@keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5); }
-  50% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+
+.voice-input-spinner {
+  animation: voice-spin 0.9s linear infinite;
 }
-@keyframes mic-spin {
+
+@keyframes voice-spin {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Label shown beside the spinner */
+.voice-input-label {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--primary, #3B5BDB);
+  background: var(--primary-tint, #EFF3FF);
+  border: 1px solid var(--primary-border, #C7D2FE);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+/* ----- Cancel button (shown only while recording) ----- */
+.voice-input-cancel {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: #6B7280;
+  border: 1px solid var(--border-strong, #D1D5DB);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+.voice-input-cancel:hover {
+  background: #F9FAFB;
+  color: #DC2626;
+  border-color: #FCA5A5;
+}
+.voice-input-cancel:active { transform: scale(0.9); }
+.voice-input-cancel svg { width: 14px; height: 14px; }
+
+/* Reduced motion — respect user preference */
+@media (prefers-reduced-motion: reduce) {
+  .voice-input-btn.state-recording,
+  .voice-input-btn.state-recording .voice-input-pulse,
+  .voice-input-spinner {
+    animation: none;
+  }
+  .voice-input-btn.state-recording {
+    background: #DC2626;
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  }
 }
 
 /* Translate button — solid cobalt */
