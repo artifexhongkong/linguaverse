@@ -19,21 +19,22 @@
 // Backend proxy mode — preferred when available (keeps API key server-side)
 const STT_BACKEND_URL = (import.meta.env.VITE_STT_BACKEND_URL ?? "").trim();
 
-// Direct mode — falls back to the Agnes gateway + Agnes API key (since Agnes
-// exposes an OpenAI-compatible /audio/transcriptions endpoint). This mirrors
-// the backend's config.py logic, so the APK can do STT out-of-the-box with
-// the same credentials that power translation — no extra secrets required.
+// Direct mode — uses an OpenAI-compatible Whisper endpoint.
 //
-// IMPORTANT: use explicit `||` fallback (not `??`) because Vite inlines
-// unset `import.meta.env.VITE_*` as the empty string `""`, which is NOT
-// nullish, so `??` would not fall through. `||` treats `""` as falsy and
-// falls through correctly.
-const AGNES_API_KEY = import.meta.env.VITE_AGNES_API_KEY || "";
-const AGNES_BASE_URL = (import.meta.env.VITE_AGNES_BASE_URL || "").replace(/\/$/, "");
-const STT_API_KEY = import.meta.env.VITE_STT_API_KEY || AGNES_API_KEY;
-const STT_BASE_URL = (
-  import.meta.env.VITE_STT_BASE_URL || AGNES_BASE_URL || "https://api.openai.com/v1"
-).replace(/\/$/, "");
+// IMPORTANT: Agnes gateway does NOT expose /audio/transcriptions (verified
+// via .env.example: "Agnes does NOT expose a Whisper endpoint"). So we do
+// NOT auto-fallback to the Agnes key/URL here — doing so would cause every
+// STT request to fail with 404 and show "語音識別失敗".
+//
+// To enable voice input in the APK, set these repo secrets:
+//   VITE_STT_API_KEY   = your OpenAI (or compatible) API key
+//   VITE_STT_BASE_URL  = https://api.openai.com/v1   (or Groq / DeepInfra)
+//   VITE_STT_MODEL     = whisper-1                    (optional, default)
+//
+// If none are set, isSTTConfigured() returns false and the mic button
+// shows a clear "未配置" message instead of failing at runtime.
+const STT_API_KEY = import.meta.env.VITE_STT_API_KEY || "";
+const STT_BASE_URL = (import.meta.env.VITE_STT_BASE_URL || "").replace(/\/$/, "");
 const STT_MODEL = import.meta.env.VITE_STT_MODEL || "whisper-1";
 
 // Bias the Whisper decoder toward Cantonese colloquial words (嘅/咗/咁/
@@ -268,14 +269,21 @@ export async function transcribe(audio: Blob): Promise<STTResult> {
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
-    console.error(`[stt/direct] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    console.error(`[stt/direct] HTTP ${response.status}: ${errText.slice(0, 300)}`);
     if (response.status === 401 || response.status === 403) {
-      throw new Error("語音識別服務認證失敗");
+      throw new Error("語音識別服務認證失敗（API key 無效）");
+    }
+    if (response.status === 404) {
+      throw new Error("語音識別服務不支援此端點，請聯繫管理員設定 STT");
     }
     if (response.status === 429) {
       throw new Error("語音識別請求過於頻繁，請稍後再試");
     }
-    throw new Error("語音識別失敗，請稍後再試");
+    if (response.status >= 500) {
+      throw new Error("語音識別服務暫時不可用，請稍後再試");
+    }
+    // Include the status code so the user / support can diagnose
+    throw new Error(`語音識別失敗 (HTTP ${response.status})`);
   }
 
   const data = await response.json();

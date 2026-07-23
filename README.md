@@ -108,10 +108,18 @@ APK 輸出路徑：`android/app/build/outputs/apk/release/app-release-unsigned.a
 - `VITE_SUPABASE_URL`（可選，配額與歷史紀錄功能）
 - `VITE_SUPABASE_ANON_KEY`（可選）
 
-**語音輸入（STT）— 三選一**
-- **自動 fallback（推薦，零設定）**：若未設定任何 `VITE_STT_*` 變數，APK 會自動使用 Agnes gateway + Agnes API key 進行 STT（Agnes 暴露了 OpenAI 相容的 `/audio/transcriptions` 端點）。只需設定 `AGNES_*` secrets 即可同時啟用翻譯 + 語音。
-- 後端代理模式：`VITE_STT_BACKEND_URL` 指向你的 FastAPI `/api/v1/stt`，後端持有 Whisper key
-- 直連模式：`VITE_STT_API_KEY` + `VITE_STT_BASE_URL`（可選 `VITE_STT_MODEL`，預設 `whisper-1`）
+**語音輸入（STT）— 自動偵測 + 三種設定方式**
+
+Build 時 workflow 會自動用真實 `AGNES_API_KEY` 呼叫 Agnes 的 `/audio/transcriptions` 端點測試是否支援 Whisper。三種啟用方式（優先級由高到低）：
+
+1. **後端代理模式**（最安全）：設定 `VITE_STT_BACKEND_URL` secret 指向你的 FastAPI `/api/v1/stt`，後端持有 Whisper key
+2. **直連模式**：設定 `VITE_STT_API_KEY` + `VITE_STT_BASE_URL` secrets（可選 `VITE_STT_MODEL`，預設 `whisper-1`）。支援任何 OpenAI 相容端點：
+   - OpenAI: `https://api.openai.com/v1` (model: `whisper-1`)
+   - Groq: `https://api.groq.com/openai/v1` (model: `whisper-large-v3`)
+   - DeepInfra: `https://api.deepinfra.com/v1/openai` (model: `openai/whisper-large-v3`)
+3. **自動偵測 Agnes**（零設定）：若未設定上述 secrets，workflow 會測試 Agnes gateway 是否支援 Whisper，若支援則自動注入 Agnes credentials
+
+若三者都未設定且 Agnes 不支援，語音按鈕會顯示「語音識別未配置」。
 
 **APK 簽署**
 - `ANDROID_KEYSTORE_BASE64` — `base64 < release.keystore` 的輸出

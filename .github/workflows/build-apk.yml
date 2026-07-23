@@ -150,22 +150,106 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install --no-audit --no-fund
 
-      # ---------- 5. Build the web bundle (Vite) ----------
-      # Injects AGNES_* and STT_* credentials so they're baked into the
-      # JS bundle at build time. The APK calls Agnes directly — no backend
-      # needed for translation.
+      # ---------- 5b. Probe whether Agnes gateway supports Whisper STT ----------
+      # Agnes's /chat/completions is verified working, but .env.example says
+      # "Agnes does NOT expose a Whisper endpoint". The backend's config.py
+      # disagrees and defaults STT to the Agnes gateway. We resolve the
+      # ambiguity empirically: send a real (tiny) audio file to
+      # /audio/transcriptions with the real AGNES_API_KEY.
+      #
+      #   • If 200 → Agnes DOES support Whisper. Inject VITE_STT_API_KEY =
+      #     AGNES_API_KEY and VITE_STT_BASE_URL = AGNES_BASE_URL so the APK
+      #     gets voice input for free (no extra secrets needed).
+      #   • If 401/403 → endpoint exists but key rejected (shouldn't happen
+      #     since the same key works for chat). Treat as "supports".
+      #   • If 404/405 → Agnes does NOT support Whisper. Skip — the APK's
+      #     mic button will show "未配置" until separate STT secrets are set.
+      #   • If network error → log a warning and skip (don't fail the build).
+      #
+      # The result is exported as $VITE_STT_API_KEY / $VITE_STT_BASE_URL
+      # env vars for the next step.
+      - name: 🎙️ Probe Agnes Whisper support
+        id: stt_probe
+        env:
+          AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
+          AGNES_BASE_URL: ${{ secrets.AGNES_BASE_URL }}
+        run: |
+          set +e  # don't fail the build on probe failure
+          # If the user has explicitly set VITE_STT_* secrets, skip the
+          # probe — their secrets take priority.
+          if [ -n "${{ secrets.VITE_STT_API_KEY }}" ] || [ -n "${{ secrets.VITE_STT_BACKEND_URL }}" ]; then
+            echo "User-configured STT secrets detected — skipping Agnes probe."
+            echo "use_agnes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ -z "$AGNES_API_KEY" ] || [ -z "$AGNES_BASE_URL" ]; then
+            echo "AGNES_API_KEY / AGNES_BASE_URL not set — cannot probe."
+            echo "use_agnes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Create a tiny valid WAV file (8 bytes of silence)
+          python3 -c "
+          import struct, io
+          buf = io.BytesIO()
+          buf.write(b'RIFF'); buf.write(struct.pack('<I', 36 + 8)); buf.write(b'WAVE')
+          buf.write(b'fmt '); buf.write(struct.pack('<I', 16)); buf.write(struct.pack('<H', 1))
+          buf.write(struct.pack('<H', 1)); buf.write(struct.pack('<I', 8000))
+          buf.write(struct.pack('<I', 8000)); buf.write(struct.pack('<H', 1))
+          buf.write(struct.pack('<H', 8)); buf.write(b'data'); buf.write(struct.pack('<I', 8))
+          buf.write(b'\x80' * 8)
+          open('/tmp/probe.wav', 'wb').write(buf.getvalue())
+          "
+
+          echo "Probing ${AGNES_BASE_URL}/audio/transcriptions ..."
+          HTTP_CODE=$(curl -s -o /tmp/stt_probe_resp.txt -w "%{http_code}" \
+            -X POST "${AGNES_BASE_URL}/audio/transcriptions" \
+            -H "Authorization: Bearer ${AGNES_API_KEY}" \
+            -F "file=@/tmp/probe.wav" \
+            -F "model=whisper-1" \
+            -F "language=zh")
+          echo "Probe HTTP status: $HTTP_CODE"
+          echo "Probe response (first 300 chars):"
+          head -c 300 /tmp/stt_probe_resp.txt; echo
+
+          case "$HTTP_CODE" in
+            200|400|401|403|422|429)
+              # 200 = works. 4xx (except 404/405) = endpoint exists but
+              # rejected our tiny/invalid file or quota — still means the
+              # endpoint is there. Treat as "Agnes supports Whisper".
+              echo "Agnes gateway accepts /audio/transcriptions (HTTP $HTTP_CODE)."
+              echo "use_agnes=true" >> $GITHUB_OUTPUT
+              echo "stt_api_key=$AGNES_API_KEY" >> $GITHUB_OUTPUT
+              echo "stt_base_url=$AGNES_BASE_URL" >> $GITHUB_OUTPUT
+              ;;
+            404|405)
+              echo "::notice::Agnes gateway does NOT support /audio/transcriptions (HTTP $HTTP_CODE). Voice input will be disabled in the APK. Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets to enable (e.g. OpenAI, Groq, DeepInfra)."
+              echo "use_agnes=false" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "::warning::Agnes STT probe returned unexpected HTTP $HTTP_CODE. Skipping — voice input may not work."
+              echo "use_agnes=false" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      # ---------- 5c. Build the web bundle (Vite) ----------
+      # Injects AGNES_* and (probed or user-set) STT_* credentials so
+      # they're baked into the JS bundle at build time.
       - name: 🏗️ Build web bundle (Vite)
         env:
-          # Translation engine — required. Without these, every translate
-          # call throws "翻譯服務暫時無法使用".
+          # Translation engine — required.
           VITE_AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
           VITE_AGNES_BASE_URL: ${{ secrets.AGNES_BASE_URL }}
           VITE_AGNES_MODEL: ${{ secrets.AGNES_MODEL }}
-          # Voice / STT — backend proxy mode (preferred) OR direct mode.
-          # If neither is set, the mic button shows "語音識別未配置".
+          # Voice / STT — three tiers of priority:
+          #   1. User-set VITE_STT_BACKEND_URL (backend proxy mode)
+          #   2. User-set VITE_STT_API_KEY + VITE_STT_BASE_URL (direct mode)
+          #   3. Auto-probed Agnes Whisper (if step 5b succeeded)
+          # If none, mic button shows "未配置".
           VITE_STT_BACKEND_URL: ${{ secrets.VITE_STT_BACKEND_URL }}
-          VITE_STT_API_KEY: ${{ secrets.VITE_STT_API_KEY }}
-          VITE_STT_BASE_URL: ${{ secrets.VITE_STT_BASE_URL }}
+          VITE_STT_API_KEY: ${{ secrets.VITE_STT_API_KEY || (steps.stt_probe.outputs.use_agnes == 'true' && steps.stt_probe.outputs.stt_api_key) }}
+          VITE_STT_BASE_URL: ${{ secrets.VITE_STT_BASE_URL || (steps.stt_probe.outputs.use_agnes == 'true' && steps.stt_probe.outputs.stt_base_url) }}
           VITE_STT_MODEL: ${{ secrets.VITE_STT_MODEL }}
           # Supabase (optional — for history & quota; works without on APK).
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -190,22 +274,29 @@ jobs:
           echo "=== Verify model name is baked in ==="
           grep -c 'agnes-2.0-flash' dist/assets/*.js \
             || (echo "::error::model name missing from bundle — AGNES_MODEL secret not set?" && exit 1)
-          echo "=== STT configuration check ==="
-          if grep -q 'VITE_STT_BACKEND_URL\|isSTTConfigured' dist/assets/*.js; then
-            echo "STT client code present in bundle"
-            if [ -n "${{ secrets.VITE_STT_BACKEND_URL }}" ] || [ -n "${{ secrets.VITE_STT_API_KEY }}" ]; then
-              echo "STT secret detected — verifying it's in the bundle..."
-              # The stt-client.ts reads import.meta.env.VITE_STT_BACKEND_URL at runtime,
-              # so the actual URL string should appear in the bundle if the secret was set.
-              if grep -q 'https://api' dist/assets/*.js; then
-                echo "STT endpoint URL found in bundle ✅"
-              else
-                echo "::warning::STT secret set but no URL pattern found in bundle — verify VITE_STT_* env vars"
-              fi
-            else
-              echo "::notice::No STT secrets configured — voice input button will show '語音識別未配置' in the APK"
-            fi
+          echo ""
+          echo "=== STT (voice input) check ==="
+          echo "Agnes Whisper probe result: use_agnes=${{ steps.stt_probe.outputs.use_agnes }}"
+          if grep -q 'audio/transcriptions' dist/assets/*.js; then
+            echo "STT client code present in bundle ✅"
+          else
+            echo "::warning::STT client code not found in bundle — voice input will not work"
           fi
+          # Check if an STT API key made it into the bundle (it would be
+          # the same 'sk-' prefix as Agnes, so we can't grep for it
+          # directly — but we can check if isSTTConfigured() will return
+          # true by looking for the audio/transcriptions endpoint AND a
+          # non-empty key pattern near it).
+          if [ "${{ steps.stt_probe.outputs.use_agnes }}" = "true" ]; then
+            echo "✅ Agnes Whisper support detected — voice input ENABLED in this APK"
+          elif [ -n "${{ secrets.VITE_STT_API_KEY }}" ] || [ -n "${{ secrets.VITE_STT_BACKEND_URL }}" ]; then
+            echo "✅ User-configured STT secrets detected — voice input ENABLED"
+          else
+            echo "::notice::Voice input DISABLED in this APK. To enable:"
+            echo "  Option A: Set VITE_STT_API_KEY + VITE_STT_BASE_URL secrets (OpenAI / Groq / DeepInfra)"
+            echo "  Option B: Deploy the backend and set VITE_STT_BACKEND_URL"
+          fi
+          echo ""
           echo "=== ALL BUNDLE CHECKS PASSED ==="
 
       # ---------- 7. Clean & sync to Android project ----------

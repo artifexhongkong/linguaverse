@@ -130,7 +130,7 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
 
     // Otherwise start recording
     if (!isSTTConfigured()) {
-      onToast("語音識別未配置");
+      onToast("語音識別未配置，請聯繫管理員設定 STT API");
       return;
     }
 
