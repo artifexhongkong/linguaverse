@@ -57,13 +57,20 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
     setDownloading(true);
     setProgress(null);
     try {
-      await downloadModels((p) => setProgress(p));
+      await downloadModels((p) => {
+        setProgress(p);
+        if (p.phase === "error") {
+          onToast(p.message || "下載失敗");
+        }
+      });
       const state = await checkModels();
       setModelsDownloaded(state.downloaded);
       setModelBytes(state.totalBytes);
-      onToast("語音模型下載完成");
+      if (state.downloaded) {
+        onToast("語音模型下載完成");
+      }
     } catch (err) {
-      onToast(err instanceof Error ? err.message : "下載失敗");
+      onToast(err instanceof Error ? err.message : "下載失敗，請檢查網路後重試");
     } finally {
       setDownloading(false);
       setProgress(null);
@@ -95,7 +102,10 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
       return `${p.percent}% · ${recv} / ${tot}`;
     }
     if (p.phase === "downloading") {
-      return formatBytes(p.received || 0);
+      return `${formatBytes(p.received || 0)} · 下載中…`;
+    }
+    if (p.phase === "error") {
+      return `錯誤：${p.message || "未知錯誤"}`;
     }
     return "";
   };

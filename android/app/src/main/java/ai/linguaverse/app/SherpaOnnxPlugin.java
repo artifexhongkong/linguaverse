@@ -159,13 +159,6 @@ public class SherpaOnnxPlugin extends Plugin {
                     File outFile = new File(dir, relPath);
                     outFile.getParentFile().mkdirs();
 
-                    // Skip if already downloaded (idempotent — supports resume)
-                    if (outFile.exists() && outFile.length() > 0) {
-                        Log.i(TAG, "SKIP (exists): " + outFile);
-                        totalBytes += outFile.length();
-                        continue;
-                    }
-
                     Log.i(TAG, "Downloading " + url + " → " + outFile);
                     final String currentFile = relPath;
                     totalBytes += downloadFile(url, outFile, (received, total) -> {
@@ -205,47 +198,130 @@ public class SherpaOnnxPlugin extends Plugin {
     }
 
     /**
-     * Download a single file with progress callback. Supports HTTP redirects
-     * (HuggingFace and GitHub use 302 redirects to CDN).
+     * Download a single file with progress callback + resume support.
+     *
+     * Handles:
+     *   - HTTP 302 redirects (HuggingFace/GitHub → CDN)
+     *   - Resume via Range header (if partial file exists)
+     *   - Long timeouts (10 min read — large files on slow networks)
+     *   - Retry on transient failures (up to 3 attempts)
      */
     private long downloadFile(String urlStr, File outFile, ProgressCallback cb) throws IOException {
+        // Check for partial download to resume from
+        long existingBytes = outFile.exists() ? outFile.length() : 0;
+
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                long downloaded = downloadFileOnce(urlStr, outFile, cb, existingBytes);
+                return downloaded;
+            } catch (IOException e) {
+                lastError = e;
+                Log.w(TAG, "Download attempt " + attempt + " failed: " + e.getMessage());
+                // Update existingBytes for resume on next attempt
+                existingBytes = outFile.exists() ? outFile.length() : 0;
+                if (attempt < 3) {
+                    try { Thread.sleep(2000L * attempt); } catch (InterruptedException ignored) {}
+                }
+            }
+        }
+        throw new IOException("Download failed after 3 attempts: " + lastError.getMessage(), lastError);
+    }
+
+    private long downloadFileOnce(String urlStr, File outFile, ProgressCallback cb, long resumeFrom) throws IOException {
+        String currentUrl = urlStr;
+        int redirectCount = 0;
         HttpURLConnection conn = null;
         InputStream in = null;
         FileOutputStream out = null;
+
         try {
-            URL url = new URL(urlStr);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(30000);
-            conn.setReadTimeout(60000);
-            conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent", "LinguaVerse/1.0");
+            // Follow up to 5 redirects manually (HttpURLConnection's auto-redirect
+            // sometimes fails for HTTPS → HTTPS cross-domain redirects on HuggingFace)
+            while (redirectCount < 5) {
+                URL url = new URL(currentUrl);
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(60000);   // 60s to establish connection
+                conn.setReadTimeout(600000);     // 10 min between read chunks (large file, slow network)
+                conn.setInstanceFollowRedirects(false);
+                conn.setRequestProperty("User-Agent", "LinguaVerse/1.1");
+                conn.setRequestProperty("Accept", "*/*");
 
-            int response = conn.getResponseCode();
-            if (response != 200) {
-                throw new IOException("HTTP " + response + " for " + urlStr);
-            }
-
-            long total = conn.getContentLength();
-            in = conn.getInputStream();
-            out = new FileOutputStream(outFile);
-
-            byte[] buf = new byte[81920];
-            long received = 0;
-            int lastReportPercent = -1;
-            int len;
-            while ((len = in.read(buf)) > 0) {
-                out.write(buf, 0, len);
-                received += len;
-                // Report progress at most every 5% to avoid flooding
-                int percent = total > 0 ? (int)(received * 100 / total) : 0;
-                if (percent != lastReportPercent && percent % 5 == 0) {
-                    lastReportPercent = percent;
-                    cb.onProgress(received, total);
+                // Resume support — if we have a partial file, request the rest
+                if (resumeFrom > 0) {
+                    conn.setRequestProperty("Range", "bytes=" + resumeFrom + "-");
+                    Log.i(TAG, "Resuming from byte " + resumeFrom);
                 }
+
+                int response = conn.getResponseCode();
+
+                // Handle redirects (301, 302, 303, 307, 308)
+                if (response == 301 || response == 302 || response == 303 || response == 307 || response == 308) {
+                    String location = conn.getHeaderField("Location");
+                    conn.disconnect();
+                    conn = null;
+                    if (location == null || location.isEmpty()) {
+                        throw new IOException("Redirect " + response + " without Location header");
+                    }
+                    Log.i(TAG, "Redirect " + response + " → " + location);
+                    currentUrl = location;
+                    redirectCount++;
+                    continue;
+                }
+
+                if (response == 416) {
+                    // Range Not Satisfiable — file already fully downloaded
+                    Log.i(TAG, "Server says range not satisfiable — file already complete");
+                    return outFile.length();
+                }
+
+                if (response != 200 && response != 206) {
+                    String body = "";
+                    try {
+                        in = conn.getErrorStream();
+                        if (in != null) {
+                            byte[] errBuf = new byte[2048];
+                            int errLen = in.read(errBuf);
+                            if (errLen > 0) body = new String(errBuf, 0, errLen);
+                        }
+                    } catch (Exception ignored) {}
+                    throw new IOException("HTTP " + response + " for " + currentUrl + " — " + body);
+                }
+
+                // 200 = full download (server ignored Range or fresh start)
+                // 206 = partial content (resume successful)
+                boolean isResume = (response == 206 && resumeFrom > 0);
+                long total = conn.getContentLength();
+                if (isResume) {
+                    // Content-Length is the remaining bytes, not the total
+                    total = resumeFrom + total;
+                } else {
+                    // Fresh download — truncate existing file
+                    resumeFrom = 0;
+                }
+
+                in = conn.getInputStream();
+                out = new FileOutputStream(outFile, isResume);
+
+                byte[] buf = new byte[131072]; // 128KB buffer — larger = fewer syscalls
+                long received = resumeFrom;
+                long lastReportTime = 0;
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                    received += len;
+                    // Report progress every 500ms (smoother UI, avoids flooding)
+                    long now = System.currentTimeMillis();
+                    if (now - lastReportTime > 500 || (total > 0 && received >= total)) {
+                        lastReportTime = now;
+                        cb.onProgress(received, total);
+                    }
+                }
+                out.flush();
+                Log.i(TAG, "Downloaded " + outFile.getName() + ": " + (received / 1024 / 1024) + " MB total");
+                return received;
             }
-            out.flush();
-            Log.i(TAG, "Downloaded " + outFile.getName() + ": " + (received / 1024 / 1024) + " MB");
-            return received;
+            throw new IOException("Too many redirects (>5) for " + urlStr);
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}
