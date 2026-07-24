@@ -738,7 +738,7 @@ public class SherpaOnnxPlugin extends Plugin {
                 // UnsatisfiedLinkError if the .so is missing, or
                 // RuntimeException if the model file is invalid.
                 try {
-                    recognizer = new OfflineRecognizer(recognizerConfig);
+                    recognizer = new OfflineRecognizer(null, recognizerConfig);
                 } catch (UnsatisfiedLinkError | ExceptionInInitializerError e) {
                     Log.e(TAG, "Native library load failed", e);
                     throw new IOException("原生庫載入失敗: " + e.getMessage()
@@ -766,7 +766,7 @@ public class SherpaOnnxPlugin extends Plugin {
 
                 Log.i(TAG, "Creating Vad (Silero, CPU, threads=2)...");
                 try {
-                    vad = new Vad(vadConfig);
+                    vad = new Vad(null, vadConfig);
                 } catch (UnsatisfiedLinkError | ExceptionInInitializerError e) {
                     Log.e(TAG, "VAD native library load failed", e);
                     throw new IOException("VAD 原生庫載入失敗: " + e.getMessage(), e);
