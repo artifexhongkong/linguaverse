@@ -162,15 +162,22 @@ public class SherpaOnnxPlugin extends Plugin {
                     Log.i(TAG, "Downloading " + url + " → " + outFile);
                     final String currentFile = relPath;
                     totalBytes += downloadFile(url, outFile, (received, total) -> {
-                        // Post progress to JS
+                        // Post progress to JS on the MAIN thread (notifyListeners
+                        // is not thread-safe — calling it from a background thread
+                        // can cause race conditions or missing events).
                         int percent = total > 0 ? (int)(received * 100 / total) : 0;
-                        JSObject prog = new JSObject();
-                        prog.put("phase", "downloading");
-                        prog.put("file", currentFile);
-                        prog.put("received", received);
-                        prog.put("total", total);
-                        prog.put("percent", percent);
-                        notifyListeners("onDownloadProgress", prog);
+                        final int finalPercent = percent;
+                        final long finalReceived = received;
+                        final long finalTotal = total;
+                        mainHandler.post(() -> {
+                            JSObject prog = new JSObject();
+                            prog.put("phase", "downloading");
+                            prog.put("file", currentFile);
+                            prog.put("received", finalReceived);
+                            prog.put("total", finalTotal);
+                            prog.put("percent", finalPercent);
+                            notifyListeners("onDownloadProgress", prog);
+                        });
                     });
                 }
 
@@ -205,9 +212,17 @@ public class SherpaOnnxPlugin extends Plugin {
      *   - Resume via Range header (if partial file exists)
      *   - Long timeouts (10 min read — large files on slow networks)
      *   - Retry on transient failures (up to 3 attempts)
+     *
+     * IMPORTANT: If the file already exists and is complete, the server
+     * returns 416 Range Not Satisfiable — we treat this as success and
+     * return the existing file size. This is NOT an error.
      */
     private long downloadFile(String urlStr, File outFile, ProgressCallback cb) throws IOException {
-        // Check for partial download to resume from
+        // Disable HTTP keep-alive for large downloads — Android's connection
+        // pool sometimes returns stale connections after a large transfer,
+        // causing the next request to fail with SocketException.
+        System.setProperty("http.keepAlive", "false");
+
         long existingBytes = outFile.exists() ? outFile.length() : 0;
 
         Exception lastError = null;
@@ -215,9 +230,10 @@ public class SherpaOnnxPlugin extends Plugin {
             try {
                 long downloaded = downloadFileOnce(urlStr, outFile, cb, existingBytes);
                 return downloaded;
-            } catch (IOException e) {
+            } catch (Exception e) {
                 lastError = e;
-                Log.w(TAG, "Download attempt " + attempt + " failed: " + e.getMessage());
+                Log.w(TAG, "Download attempt " + attempt + " failed for " + outFile.getName()
+                        + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 // Update existingBytes for resume on next attempt
                 existingBytes = outFile.exists() ? outFile.length() : 0;
                 if (attempt < 3) {
@@ -225,7 +241,8 @@ public class SherpaOnnxPlugin extends Plugin {
                 }
             }
         }
-        throw new IOException("Download failed after 3 attempts: " + lastError.getMessage(), lastError);
+        throw new IOException("下載失敗（重試 3 次）: " + lastError.getClass().getSimpleName()
+                + " — " + lastError.getMessage(), lastError);
     }
 
     private long downloadFileOnce(String urlStr, File outFile, ProgressCallback cb, long resumeFrom) throws IOException {
@@ -242,18 +259,22 @@ public class SherpaOnnxPlugin extends Plugin {
                 URL url = new URL(currentUrl);
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setConnectTimeout(60000);   // 60s to establish connection
-                conn.setReadTimeout(600000);     // 10 min between read chunks (large file, slow network)
+                conn.setReadTimeout(600000);     // 10 min between read chunks
                 conn.setInstanceFollowRedirects(false);
+                conn.setUseCaches(false);
                 conn.setRequestProperty("User-Agent", "LinguaVerse/1.1");
                 conn.setRequestProperty("Accept", "*/*");
+                conn.setRequestProperty("Connection", "close");
 
                 // Resume support — if we have a partial file, request the rest
                 if (resumeFrom > 0) {
                     conn.setRequestProperty("Range", "bytes=" + resumeFrom + "-");
-                    Log.i(TAG, "Resuming from byte " + resumeFrom);
+                    Log.i(TAG, "Resuming " + outFile.getName() + " from byte " + resumeFrom);
                 }
 
                 int response = conn.getResponseCode();
+                Log.i(TAG, "HTTP " + response + " for " + outFile.getName()
+                        + " (redirect=" + redirectCount + ", resumeFrom=" + resumeFrom + ")");
 
                 // Handle redirects (301, 302, 303, 307, 308)
                 if (response == 301 || response == 302 || response == 303 || response == 307 || response == 308) {
@@ -263,54 +284,62 @@ public class SherpaOnnxPlugin extends Plugin {
                     if (location == null || location.isEmpty()) {
                         throw new IOException("Redirect " + response + " without Location header");
                     }
-                    Log.i(TAG, "Redirect " + response + " → " + location);
+                    Log.i(TAG, "  → Redirect to: " + location.substring(0, Math.min(100, location.length())));
                     currentUrl = location;
                     redirectCount++;
                     continue;
                 }
 
                 if (response == 416) {
-                    // Range Not Satisfiable — file already fully downloaded
-                    Log.i(TAG, "Server says range not satisfiable — file already complete");
+                    // Range Not Satisfiable — file already fully downloaded.
+                    // This is SUCCESS, not an error.
+                    Log.i(TAG, "  → 416 Range Not Satisfiable — " + outFile.getName() + " already complete ("
+                            + outFile.length() + " bytes)");
+                    // Report 100% progress before returning
+                    cb.onProgress(outFile.length(), outFile.length());
                     return outFile.length();
                 }
 
                 if (response != 200 && response != 206) {
                     String body = "";
                     try {
-                        in = conn.getErrorStream();
-                        if (in != null) {
+                        InputStream errStream = conn.getErrorStream();
+                        if (errStream != null) {
                             byte[] errBuf = new byte[2048];
-                            int errLen = in.read(errBuf);
+                            int errLen = errStream.read(errBuf);
                             if (errLen > 0) body = new String(errBuf, 0, errLen);
+                            errStream.close();
                         }
                     } catch (Exception ignored) {}
-                    throw new IOException("HTTP " + response + " for " + currentUrl + " — " + body);
+                    throw new IOException("HTTP " + response + " — " + body);
                 }
 
                 // 200 = full download (server ignored Range or fresh start)
                 // 206 = partial content (resume successful)
                 boolean isResume = (response == 206 && resumeFrom > 0);
-                long total = conn.getContentLength();
+                long contentLen = conn.getContentLength();
+                long total;
                 if (isResume) {
                     // Content-Length is the remaining bytes, not the total
-                    total = resumeFrom + total;
+                    total = resumeFrom + contentLen;
                 } else {
                     // Fresh download — truncate existing file
                     resumeFrom = 0;
+                    total = contentLen;
                 }
+                Log.i(TAG, "  Content-Length=" + contentLen + ", total=" + total + ", isResume=" + isResume);
 
                 in = conn.getInputStream();
                 out = new FileOutputStream(outFile, isResume);
 
-                byte[] buf = new byte[131072]; // 128KB buffer — larger = fewer syscalls
+                byte[] buf = new byte[131072]; // 128KB buffer
                 long received = resumeFrom;
                 long lastReportTime = 0;
                 int len;
                 while ((len = in.read(buf)) > 0) {
                     out.write(buf, 0, len);
                     received += len;
-                    // Report progress every 500ms (smoother UI, avoids flooding)
+                    // Report progress every 500ms
                     long now = System.currentTimeMillis();
                     if (now - lastReportTime > 500 || (total > 0 && received >= total)) {
                         lastReportTime = now;
@@ -318,14 +347,23 @@ public class SherpaOnnxPlugin extends Plugin {
                     }
                 }
                 out.flush();
-                Log.i(TAG, "Downloaded " + outFile.getName() + ": " + (received / 1024 / 1024) + " MB total");
+                Log.i(TAG, "  Downloaded " + outFile.getName() + ": " + received + " bytes (file size: " + outFile.length() + ")");
+
+                // Verify file size if we know the expected total
+                if (total > 0 && outFile.length() != total) {
+                    Log.w(TAG, "  WARNING: file size mismatch! Expected " + total + " but got " + outFile.length());
+                    // Don't throw — some servers report wrong Content-Length.
+                    // The file may still be usable.
+                }
                 return received;
             }
-            throw new IOException("Too many redirects (>5) for " + urlStr);
+            throw new IOException("Too many redirects (>5)");
         } finally {
-            if (in != null) try { in.close(); } catch (Exception ignored) {}
-            if (out != null) try { out.close(); } catch (Exception ignored) {}
-            if (conn != null) conn.disconnect();
+            // Close in reverse order. Catch ALL exceptions — a failure in
+            // close() should not mask the actual download result.
+            if (in != null) { try { in.close(); } catch (Exception e) { Log.w(TAG, "in.close() failed", e); } }
+            if (out != null) { try { out.close(); } catch (Exception e) { Log.w(TAG, "out.close() failed", e); } }
+            if (conn != null) { try { conn.disconnect(); } catch (Exception e) { Log.w(TAG, "conn.disconnect() failed", e); } }
         }
     }
 
