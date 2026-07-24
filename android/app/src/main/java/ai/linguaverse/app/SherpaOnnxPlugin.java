@@ -100,21 +100,28 @@ public class SherpaOnnxPlugin extends Plugin {
     };
 
     // Mirror URLs for each file (used if primary GitHub URL fails).
-    // Order: GitHub → cors.isteed.cc (China mirror) → HuggingFace (fallback).
+    // Order: GitHub → cors.isteed.cc → gh.ddlc.top (China mirrors) → HuggingFace.
+    //
+    // China mirrors are tried before HuggingFace because HF is blocked
+    // in mainland China. Both cors.isteed.cc and gh.ddlc.top are GitHub
+    // proxies that work from China.
     private static final String[][] MIRROR_URLS = {
             {   // model.int8.onnx
                     GITHUB_RELEASES_BASE + "/model.int8.onnx",
                     CORS_BASE + "/model.int8.onnx",
+                    "https://gh.ddlc.top/https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1/model.int8.onnx",
                     HUGGINGFACE_BASE + "/model.int8.onnx",
             },
             {   // tokens.txt
                     GITHUB_RELEASES_BASE + "/tokens.txt",
                     CORS_BASE + "/tokens.txt",
+                    "https://gh.ddlc.top/https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1/tokens.txt",
                     HUGGINGFACE_BASE + "/tokens.txt",
             },
             {   // silero_vad.onnx
                     GITHUB_RELEASES_BASE + "/silero_vad.onnx",
                     CORS_BASE + "/silero_vad.onnx",
+                    "https://gh.ddlc.top/https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1/silero_vad.onnx",
                     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             },
     };
@@ -134,7 +141,19 @@ public class SherpaOnnxPlugin extends Plugin {
     public void load() {
         super.load();
         inferenceExecutor = Executors.newSingleThreadExecutor();
+
+        // Pre-load native library at plugin load time so we can catch
+        // UnsatisfiedLinkError early (before user taps mic).
+        try {
+            System.loadLibrary("sherpa-onnx-jni");
+            Log.i(TAG, "sherpa-onnx-jni native library loaded successfully");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "FAILED to load sherpa-onnx-jni native library!", e);
+            nativeLibError = e.getMessage();
+        }
     }
+
+    private String nativeLibError = null;
 
     @Override
     protected void handleOnDestroy() {
@@ -654,8 +673,12 @@ public class SherpaOnnxPlugin extends Plugin {
      * Models must be downloaded first via downloadModels().
      *
      * Verifies file sizes before loading to prevent sherpa-onnx from
-     * crashing on corrupt/incomplete model files (e.g. an HTML error
-     * page that was saved as model.int8.onnx by a dead mirror).
+     * crashing on corrupt/incomplete model files.
+     *
+     * ALL exceptions are caught — including Error subclasses like
+     * UnsatisfiedLinkError (native lib not found) and
+     * ExceptionInInitializerError (static loadLibrary failed). These
+     * would otherwise crash the app with no error message.
      */
     @PluginMethod
     public void initSpeechRecognizer(PluginCall call) {
@@ -673,6 +696,12 @@ public class SherpaOnnxPlugin extends Plugin {
             return;
         }
 
+        // Check if native library failed to load at plugin init
+        if (nativeLibError != null) {
+            call.reject("原生庫載入失敗: " + nativeLibError + " — 請重新安裝 APK");
+            return;
+        }
+
         isInitializing.set(true);
         inferenceExecutor.execute(() -> {
             try {
@@ -681,12 +710,12 @@ public class SherpaOnnxPlugin extends Plugin {
                 String tokensPath = new File(dir, "sense-voice/tokens.txt").getAbsolutePath();
                 String vadModelPath = new File(dir, "silero-vad/silero_vad.onnx").getAbsolutePath();
 
-                // Double-check file sizes before loading (areModelsDownloaded
-                // already checks, but this catches any race condition where
-                // the file was deleted between the check and here).
+                // Double-check file sizes before loading
                 verifyModelFile(modelPath, EXPECTED_MODEL_SIZE, "model.int8.onnx");
                 verifyModelFile(tokensPath, EXPECTED_TOKENS_SIZE, "tokens.txt");
                 verifyModelFile(vadModelPath, EXPECTED_VAD_SIZE, "silero_vad.onnx");
+
+                Log.i(TAG, "All model files verified, loading native recognizer...");
 
                 // OfflineSenseVoiceModelConfig
                 OfflineSenseVoiceModelConfig senseVoice = new OfflineSenseVoiceModelConfig();
@@ -698,8 +727,6 @@ public class SherpaOnnxPlugin extends Plugin {
                 modelConfig.setSenseVoice(senseVoice);
                 modelConfig.setTokens(tokensPath);
                 modelConfig.setNumThreads(2);
-                // Use "cpu" instead of "nnapi" — NNAPI can crash on some
-                // devices with unsupported ops. CPU is universally safe.
                 modelConfig.setProvider("cpu");
                 modelConfig.setDebug(false);
 
@@ -707,7 +734,20 @@ public class SherpaOnnxPlugin extends Plugin {
                 recognizerConfig.setModelConfig(modelConfig);
 
                 Log.i(TAG, "Creating OfflineRecognizer (SenseVoiceSmall, CPU, threads=2)...");
-                recognizer = new OfflineRecognizer(null, recognizerConfig);
+                // Wrap native constructor in try-catch — it can throw
+                // UnsatisfiedLinkError if the .so is missing, or
+                // RuntimeException if the model file is invalid.
+                try {
+                    recognizer = new OfflineRecognizer(recognizerConfig);
+                } catch (UnsatisfiedLinkError | ExceptionInInitializerError e) {
+                    Log.e(TAG, "Native library load failed", e);
+                    throw new IOException("原生庫載入失敗: " + e.getMessage()
+                            + " — 請確認 APK 安裝完整", e);
+                } catch (RuntimeException e) {
+                    Log.e(TAG, "Recognizer creation failed", e);
+                    throw new IOException("模型載入失敗: " + e.getMessage()
+                            + " — 請嘗試重新下載模型", e);
+                }
 
                 // SileroVadModelConfig
                 SileroVadModelConfig sileroVad = new SileroVadModelConfig();
@@ -725,7 +765,15 @@ public class SherpaOnnxPlugin extends Plugin {
                 vadConfig.setDebug(false);
 
                 Log.i(TAG, "Creating Vad (Silero, CPU, threads=2)...");
-                vad = new Vad(null, vadConfig);
+                try {
+                    vad = new Vad(vadConfig);
+                } catch (UnsatisfiedLinkError | ExceptionInInitializerError e) {
+                    Log.e(TAG, "VAD native library load failed", e);
+                    throw new IOException("VAD 原生庫載入失敗: " + e.getMessage(), e);
+                } catch (RuntimeException e) {
+                    Log.e(TAG, "VAD creation failed", e);
+                    throw new IOException("VAD 模型載入失敗: " + e.getMessage(), e);
+                }
 
                 audioBufferSize = Math.max(
                         AudioRecord.getMinBufferSize(SAMPLE_RATE,
