@@ -62,42 +62,59 @@ public class SherpaOnnxPlugin extends Plugin {
     //
     // Primary: GitHub Releases (our own repo — most reliable, supports
     //          Range/resume, no rate limits for public repos).
-    // Mirror 1: ghproxy.com — a GitHub proxy popular in mainland China
-    //          to bypass GFW throttling on github.com.
+    // Mirror 1: cors.isteed.cc — a GitHub CORS proxy that works in
+    //          mainland China to bypass GFW throttling on github.com.
+    //          (ghproxy.com is DEAD as of 2026 — redirects to ghfast.top
+    //          homepage instead of the actual file.)
     // Mirror 2: HuggingFace (original source — works everywhere except
     //          mainland China where HF is often blocked).
     //
     // The download logic tries each mirror in order until one succeeds.
+    // After download, file size is verified against EXPECTED_SIZES to
+    // prevent "instant download" of error HTML pages being treated as
+    // successful model downloads.
     private static final String GITHUB_RELEASES_BASE =
             "https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1";
-    private static final String GHPROXY_BASE =
-            "https://ghproxy.com/https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1";
+    private static final String CORS_BASE =
+            "https://cors.isteed.cc/github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1";
     private static final String HUGGINGFACE_BASE =
             "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
 
-    // Files to download (relative path → list of mirror URLs, tried in order)
+    // Expected file sizes (in bytes) — used to verify downloads.
+    // If a downloaded file doesn't match, it's likely an error HTML page
+    // (e.g. a dead mirror returning a redirect page) and we retry.
+    private static final long EXPECTED_MODEL_SIZE  = 239233841L; // model.int8.onnx (~228 MB)
+    private static final long EXPECTED_TOKENS_SIZE =    315894L; // tokens.txt (~309 KB)
+    private static final long EXPECTED_VAD_SIZE    =    643854L; // silero_vad.onnx (~629 KB)
+
+    // Files to download (relative path under MODEL_DIR → primary download URL)
     private static final String[][] DOWNLOAD_FILES = {
             {"sense-voice/model.int8.onnx", GITHUB_RELEASES_BASE + "/model.int8.onnx"},
             {"sense-voice/tokens.txt",      GITHUB_RELEASES_BASE + "/tokens.txt"},
             {"silero-vad/silero_vad.onnx",  GITHUB_RELEASES_BASE + "/silero_vad.onnx"},
     };
 
+    // Expected sizes indexed by file (matches DOWNLOAD_FILES order)
+    private static final long[] EXPECTED_SIZES = {
+            EXPECTED_MODEL_SIZE, EXPECTED_TOKENS_SIZE, EXPECTED_VAD_SIZE,
+    };
+
     // Mirror URLs for each file (used if primary GitHub URL fails).
-    // Order: GitHub → ghproxy (China mirror) → HuggingFace (fallback).
+    // Order: GitHub → cors.isteed.cc (China mirror) → HuggingFace (fallback).
     private static final String[][] MIRROR_URLS = {
             {   // model.int8.onnx
                     GITHUB_RELEASES_BASE + "/model.int8.onnx",
-                    GHPROXY_BASE + "/model.int8.onnx",
+                    CORS_BASE + "/model.int8.onnx",
                     HUGGINGFACE_BASE + "/model.int8.onnx",
             },
             {   // tokens.txt
                     GITHUB_RELEASES_BASE + "/tokens.txt",
-                    GHPROXY_BASE + "/tokens.txt",
+                    CORS_BASE + "/tokens.txt",
                     HUGGINGFACE_BASE + "/tokens.txt",
             },
             {   // silero_vad.onnx
                     GITHUB_RELEASES_BASE + "/silero_vad.onnx",
-                    GHPROXY_BASE + "/silero_vad.onnx",
+                    CORS_BASE + "/silero_vad.onnx",
                     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             },
     };
@@ -151,13 +168,50 @@ public class SherpaOnnxPlugin extends Plugin {
     }
 
     /**
-     * Check if all required model files exist in internal storage.
+     * Verify a model file exists and matches the expected size.
+     * Throws IOException with a clear message if the file is missing
+     * or wrong size — this prevents sherpa-onnx from crashing with a
+     * native segfault when given a corrupt model file.
+     */
+    private void verifyModelFile(String path, long expectedSize, String displayName) throws IOException {
+        File f = new File(path);
+        if (!f.exists()) {
+            throw new IOException("模型檔案不存在: " + displayName + " — 請重新下載");
+        }
+        long actual = f.length();
+        long tolerance = expectedSize / 100; // 1% tolerance
+        if (Math.abs(actual - expectedSize) > tolerance) {
+            // Delete the corrupt file so the next download attempt
+            // starts fresh instead of trying to resume.
+            f.delete();
+            throw new IOException("模型檔案損壞: " + displayName
+                    + " 大小 " + actual + " ≠ 預期 " + expectedSize
+                    + " — 已刪除，請重新下載");
+        }
+        Log.i(TAG, "Verified " + displayName + ": " + (actual / 1024 / 1024) + " MB ✅");
+    }
+
+    /**
+     * Check if all required model files exist in internal storage AND
+     * match their expected sizes. This prevents "instant download" bugs
+     * where a dead mirror returns an HTML error page that gets saved as
+     * the model file (e.g. 1.8KB HTML page instead of 228MB ONNX model).
      */
     private boolean areModelsDownloaded() {
         File dir = getModelsDir();
-        for (String[] entry : DOWNLOAD_FILES) {
-            File f = new File(dir, entry[0]);
+        for (int i = 0; i < DOWNLOAD_FILES.length; i++) {
+            File f = new File(dir, DOWNLOAD_FILES[i][0]);
             if (!f.exists() || f.length() == 0) return false;
+            // Verify size matches expected (within 1% tolerance for any
+            // minor server-side re-encoding differences)
+            long expected = EXPECTED_SIZES[i];
+            long actual = f.length();
+            long tolerance = expected / 100; // 1%
+            if (Math.abs(actual - expected) > tolerance) {
+                Log.w(TAG, "Model file size mismatch: " + f.getName()
+                        + " expected=" + expected + " actual=" + actual);
+                return false;
+            }
         }
         return true;
     }
@@ -285,11 +339,13 @@ public class SherpaOnnxPlugin extends Plugin {
                     String relPath = DOWNLOAD_FILES[fileIdx][0];
                     File outFile = new File(dir, relPath);
                     outFile.getParentFile().mkdirs();
+                    long expectedSize = EXPECTED_SIZES[fileIdx];
 
-                    Log.i(TAG, "Downloading " + relPath + " → " + outFile);
+                    Log.i(TAG, "Downloading " + relPath + " (expected " + expectedSize + " bytes) → " + outFile);
                     final String currentFile = relPath;
 
-                    // Try each mirror URL until one succeeds
+                    // Try each mirror URL until one succeeds AND produces
+                    // a file of the correct size.
                     String[] mirrors = MIRROR_URLS[fileIdx];
                     boolean downloaded = false;
                     Exception lastErr = null;
@@ -298,6 +354,15 @@ public class SherpaOnnxPlugin extends Plugin {
                         String mirrorUrl = mirrors[mirrorIdx];
                         Log.i(TAG, "  Trying mirror " + (mirrorIdx + 1) + "/" + mirrors.length
                                 + ": " + mirrorUrl.substring(0, Math.min(80, mirrorUrl.length())));
+
+                        // If a previous mirror left a corrupt/wrong-size file,
+                        // delete it before retrying (otherwise resume logic
+                        // would try to resume from the wrong offset).
+                        if (outFile.exists() && outFile.length() != expectedSize && outFile.length() < expectedSize / 2) {
+                            Log.w(TAG, "  Deleting corrupt partial file (" + outFile.length() + " bytes)");
+                            outFile.delete();
+                        }
+
                         try {
                             long bytes = downloadFile(mirrorUrl, outFile, (received, total) -> {
                                 int percent = total > 0 ? (int)(received * 100 / total) : 0;
@@ -314,9 +379,21 @@ public class SherpaOnnxPlugin extends Plugin {
                                     notifyListeners("onDownloadProgress", prog);
                                 });
                             });
+
+                            // Verify file size — a dead mirror might return
+                            // HTTP 200 with an HTML error page (e.g. 1.8KB)
+                            // instead of the actual 228MB model file.
+                            if (outFile.length() != expectedSize) {
+                                Log.w(TAG, "  ✗ Mirror " + (mirrorIdx + 1) + " produced wrong size: "
+                                        + outFile.length() + " (expected " + expectedSize + ")");
+                                outFile.delete(); // remove corrupt file
+                                throw new IOException("檔案大小不正確: " + outFile.length()
+                                        + " ≠ " + expectedSize);
+                            }
+
                             totalBytes += bytes;
                             downloaded = true;
-                            Log.i(TAG, "  ✓ Mirror " + (mirrorIdx + 1) + " succeeded: " + bytes + " bytes");
+                            Log.i(TAG, "  ✓ Mirror " + (mirrorIdx + 1) + " succeeded: " + bytes + " bytes (verified)");
                             break; // success, move to next file
                         } catch (Exception e) {
                             lastErr = e;
@@ -575,6 +652,10 @@ public class SherpaOnnxPlugin extends Plugin {
     /**
      * initSpeechRecognizer — async model loading.
      * Models must be downloaded first via downloadModels().
+     *
+     * Verifies file sizes before loading to prevent sherpa-onnx from
+     * crashing on corrupt/incomplete model files (e.g. an HTML error
+     * page that was saved as model.int8.onnx by a dead mirror).
      */
     @PluginMethod
     public void initSpeechRecognizer(PluginCall call) {
@@ -588,7 +669,7 @@ public class SherpaOnnxPlugin extends Plugin {
         }
 
         if (!areModelsDownloaded()) {
-            call.reject("models not downloaded — call downloadModels() first");
+            call.reject("模型未下載或檔案不完整，請重新下載");
             return;
         }
 
@@ -600,6 +681,13 @@ public class SherpaOnnxPlugin extends Plugin {
                 String tokensPath = new File(dir, "sense-voice/tokens.txt").getAbsolutePath();
                 String vadModelPath = new File(dir, "silero-vad/silero_vad.onnx").getAbsolutePath();
 
+                // Double-check file sizes before loading (areModelsDownloaded
+                // already checks, but this catches any race condition where
+                // the file was deleted between the check and here).
+                verifyModelFile(modelPath, EXPECTED_MODEL_SIZE, "model.int8.onnx");
+                verifyModelFile(tokensPath, EXPECTED_TOKENS_SIZE, "tokens.txt");
+                verifyModelFile(vadModelPath, EXPECTED_VAD_SIZE, "silero_vad.onnx");
+
                 // OfflineSenseVoiceModelConfig
                 OfflineSenseVoiceModelConfig senseVoice = new OfflineSenseVoiceModelConfig();
                 senseVoice.setModel(modelPath);
@@ -610,13 +698,15 @@ public class SherpaOnnxPlugin extends Plugin {
                 modelConfig.setSenseVoice(senseVoice);
                 modelConfig.setTokens(tokensPath);
                 modelConfig.setNumThreads(2);
-                modelConfig.setProvider("nnapi");
+                // Use "cpu" instead of "nnapi" — NNAPI can crash on some
+                // devices with unsupported ops. CPU is universally safe.
+                modelConfig.setProvider("cpu");
                 modelConfig.setDebug(false);
 
                 OfflineRecognizerConfig recognizerConfig = new OfflineRecognizerConfig();
                 recognizerConfig.setModelConfig(modelConfig);
 
-                Log.i(TAG, "Creating OfflineRecognizer (SenseVoiceSmall, NNAPI, threads=2)...");
+                Log.i(TAG, "Creating OfflineRecognizer (SenseVoiceSmall, CPU, threads=2)...");
                 recognizer = new OfflineRecognizer(null, recognizerConfig);
 
                 // SileroVadModelConfig
@@ -631,10 +721,10 @@ public class SherpaOnnxPlugin extends Plugin {
                 vadConfig.setSileroVadModelConfig(sileroVad);
                 vadConfig.setSampleRate(SAMPLE_RATE);
                 vadConfig.setNumThreads(2);
-                vadConfig.setProvider("nnapi");
+                vadConfig.setProvider("cpu");
                 vadConfig.setDebug(false);
 
-                Log.i(TAG, "Creating Vad (Silero, NNAPI, threads=2)...");
+                Log.i(TAG, "Creating Vad (Silero, CPU, threads=2)...");
                 vad = new Vad(null, vadConfig);
 
                 audioBufferSize = Math.max(
