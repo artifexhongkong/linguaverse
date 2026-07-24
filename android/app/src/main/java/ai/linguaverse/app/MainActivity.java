@@ -36,16 +36,9 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
-        // Register the SherpaOnnx plugin BEFORE super.onCreate() so
-        // Capacitor's bridge picks it up during initialization.
-        registerPlugin(SherpaOnnxPlugin.class);
-
         super.onCreate(savedInstanceState);
 
-        // Proactively request RECORD_AUDIO if not yet granted. The user
-        // will see the standard Android permission dialog. If they grant
-        // it here, the WebView's onPermissionRequest (handled by Capacitor)
-        // will succeed instantly on first mic tap.
+        // Proactively request RECORD_AUDIO if not yet granted.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {

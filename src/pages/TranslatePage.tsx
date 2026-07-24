@@ -1,22 +1,25 @@
 import { useState } from "react";
 import { LANGUAGES, getLanguage } from "../lib/languages";
 import { scheduleTranslationStream, type TranslationOutput } from "../service/translator-scheduler";
-import { insertTranslation, incrementQuota } from "../lib/supabase";
+import { insertTranslation } from "../lib/supabase";
 import { BottomSheet, SheetItem } from "../components/BottomSheet";
-import { VoiceInput } from "../components/VoiceInput";
 
 interface TranslatePageProps {
   sourceLang: string;
   targetLang: string;
   onLangChange: (source: string, target: string) => void;
   onToast: (msg: string) => void;
-  onQuotaUpdate: () => void;
-  quotaUsed: number;
-  quotaLimit: number;
+  onTranslateRequest: (callback: () => void) => boolean;
+  onTranslationDone: () => void;
+  dailyUsed: number;
+  dailyLimit: number;
+  adFree: boolean;
 }
 
 export function TranslatePage({
-  sourceLang, targetLang, onLangChange, onToast, onQuotaUpdate, quotaUsed, quotaLimit,
+  sourceLang, targetLang, onLangChange, onToast,
+  onTranslateRequest, onTranslationDone,
+  dailyUsed, dailyLimit, adFree,
 }: TranslatePageProps) {
   const [input, setInput] = useState("");
   const [result, setResult] = useState<TranslationOutput | null>(null);
@@ -25,14 +28,22 @@ export function TranslatePage({
   const [sheet, setSheet] = useState<null | "source" | "target">(null);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [voiceActive, setVoiceActive] = useState(false);
 
   const charLimit = 500;
-  const remaining = Math.max(quotaLimit - quotaUsed, 0);
-  const canTranslate = input.trim().length > 0 && !loading && remaining > 0;
+  const remainingFree = Math.max(dailyLimit - dailyUsed, 0);
+  const needsAd = !adFree && remainingFree <= 0;
+  const canTranslate = input.trim().length > 0 && !loading;
 
-  const handleTranslate = async () => {
+  const handleTranslate = () => {
     if (!canTranslate) return;
+
+    // Ask App.tsx to check quota / show ad if needed.
+    // The callback runs only if the user is allowed to translate
+    // (either has free quota left, or ad has been watched).
+    onTranslateRequest(doTranslate);
+  };
+
+  const doTranslate = async () => {
     setLoading(true);
     setResult(null);
     setStreamingText("");
@@ -52,8 +63,7 @@ export function TranslatePage({
         context_mode: "general",
         confidence: 0.95,
       });
-      await incrementQuota(1);
-      onQuotaUpdate();
+      onTranslationDone();
       setSaved(true);
     } catch {
       onToast("翻譯失敗，請稍後再試");
@@ -76,29 +86,11 @@ export function TranslatePage({
       setCopied(true);
       onToast("已複製到剪貼簿");
       setTimeout(() => setCopied(false), 1800);
-    } catch {
-      onToast("複製失敗");
-    }
+    } catch { onToast("複製失敗"); }
   };
 
   const handleClear = () => {
     setInput(""); setResult(null); setStreamingText(""); setSaved(false); setCopied(false);
-  };
-
-  // VoiceInput callback — append the recognised text to the input box
-  const handleVoiceTranscribed = (text: string) => {
-    setInput((prev) => {
-      const base = prev.trim();
-      const merged = base ? `${base} ${text}` : text;
-      return merged.slice(0, charLimit);
-    });
-    // Clear any previous result so the user sees the new text fresh
-    if (result) { setResult(null); setSaved(false); setCopied(false); }
-  };
-
-  // VoiceInput state changes — toggles the textarea placeholder
-  const handleVoiceStateChange = (s: "idle" | "recording" | "transcribing") => {
-    setVoiceActive(s !== "idle");
   };
 
   const displayText = result ? result.text : (loading && streamingText ? streamingText : "");
@@ -130,7 +122,7 @@ export function TranslatePage({
       <div className="input-card">
         <textarea
           className="translate-textarea"
-          placeholder={voiceActive ? "正在錄音…" : "輸入要翻譯的文字，或點擊麥克風語音輸入…"}
+          placeholder="輸入要翻譯的文字…"
           value={input}
           onChange={(e) => {
             const val = e.target.value.slice(0, charLimit);
@@ -144,12 +136,6 @@ export function TranslatePage({
             {input.length} / {charLimit}
           </span>
           <div className="input-actions">
-            <VoiceInput
-              onTranscribed={handleVoiceTranscribed}
-              onToast={onToast}
-              onStateChange={handleVoiceStateChange}
-              disabled={loading}
-            />
             <button className="icon-btn" onClick={handleClear} disabled={!input && !result} aria-label="清除">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 6L6 18M6 6l12 12" />
@@ -174,16 +160,20 @@ export function TranslatePage({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M5 12h14M12 5l7 7-7 7" />
             </svg>
-            翻譯
+            {needsAd ? "看廣告後翻譯" : "翻譯"}
           </>
         )}
       </button>
 
-      {!loading && !result && remaining > 0 && (
-        <div className="quota-hint">本月剩餘 <b>{remaining}</b> 次翻譯</div>
+      {!loading && !result && !needsAd && (
+        <div className="quota-hint">
+          {adFree
+            ? "無廣告版 · 無限翻譯"
+            : <>今日剩餘 <b>{remainingFree}</b> 次免費翻譯</>}
+        </div>
       )}
-      {!loading && remaining <= 0 && (
-        <div className="quota-hint">本月配額已用完，升級 Pro 享受無限翻譯</div>
+      {!loading && needsAd && (
+        <div className="quota-hint">今日免費次數已用完，點擊翻譯觀看廣告即可繼續</div>
       )}
 
       {loading && !streamingText && (

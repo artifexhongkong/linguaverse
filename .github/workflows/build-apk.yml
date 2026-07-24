@@ -150,26 +150,6 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install --no-audit --no-fund
 
-      # ---------- 5a. Download sherpa-onnx AAR (cached) ----------
-      # Only the AAR (~35MB) is needed at build time — model files are
-      # downloaded by users on-demand via the Settings page, keeping
-      # the APK lightweight (~3MB instead of 266MB).
-      - name: 📦 Cache sherpa-onnx AAR
-        id: sherpa-cache
-        uses: actions/cache@v4
-        with:
-          path: android/app/libs/sherpa-onnx.aar
-          key: sherpa-onnx-aar-v1.10.40
-
-      - name: 📥 Download sherpa-onnx AAR
-        if: steps.sherpa-cache.outputs.cache-hit != 'true'
-        run: bash scripts/download-sherpa-aar.sh
-
-      - name: ✅ Verify sherpa-onnx AAR present
-        run: |
-          echo "=== AAR ==="
-          ls -lh android/app/libs/sherpa-onnx.aar
-
       # ---------- 5b. Probe Agnes for a working speech-to-text model ----------
       # Agnes's /chat/completions is verified working. The user confirmed
       # Agnes DOES have a speech-recognition model — we just need to find

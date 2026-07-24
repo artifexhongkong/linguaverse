@@ -1309,3 +1309,114 @@
   color: #EF4444;
   border-color: rgba(239, 68, 68, 0.3);
 }
+
+/* ============================================================
+   Ad Overlay
+   ============================================================ */
+.ad-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.25s ease both;
+}
+
+.ad-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--bg-elev, #111827);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.ad-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ad-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.ad-countdown {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ad-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+}
+.ad-close:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+
+.ad-body {
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ad-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+}
+.ad-placeholder p { font-size: 15px; font-weight: 600; margin: 0; }
+.ad-placeholder .ad-subtitle { font-size: 13px; font-weight: 400; color: var(--text-muted); }
+
+.ad-footer { padding: 16px; border-top: 1px solid var(--border-subtle); }
+
+.ad-continue-btn {
+  width: 100%;
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: var(--primary);
+  color: #FFFFFF;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.18s var(--ease-out), opacity 0.18s var(--ease-out);
+}
+.ad-continue-btn:active:not(:disabled) { transform: scale(0.97); }
+.ad-continue-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Header quota badge (replaces plan badge) */
+.header-quota-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  padding: 4px 12px;
+  letter-spacing: 0.02em;
+}

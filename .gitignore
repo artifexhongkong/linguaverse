@@ -11,11 +11,6 @@ android/local.properties
 .env
 .v3/
 
-# sherpa-onnx native library + offline models (downloaded by CI)
-android/app/libs/sherpa-onnx.aar
-android/app/libs/*.aar
-android/app/src/main/assets/sherpa-models/
-
 # Python
 backend/venv/
 backend/__pycache__/
