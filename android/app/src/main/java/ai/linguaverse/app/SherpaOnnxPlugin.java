@@ -810,6 +810,45 @@ public class SherpaOnnxPlugin extends Plugin {
                     throw new IOException("VAD 模型載入失敗: " + e.getMessage(), e);
                 }
 
+                // Test VAD with a small buffer to verify native ptr is valid.
+                // If this crashes, we know the VAD model didn't load correctly.
+                // Check ptr via reflection — Vad constructor can return ptr=0
+                // (native init failed silently) which causes segfault on use.
+                try {
+                    java.lang.reflect.Field ptrField = Vad.class.getDeclaredField("ptr");
+                    ptrField.setAccessible(true);
+                    long vadPtr = (long) ptrField.getLong(vad);
+                    if (vadPtr == 0) {
+                        throw new IOException("VAD native ptr is 0 — 模型載入失敗（靜默），請重新下載模型");
+                    }
+                    Log.i(TAG, "VAD native ptr = " + vadPtr + " (valid)");
+
+                    // Also check recognizer ptr
+                    java.lang.reflect.Field recPtrField = OfflineRecognizer.class.getDeclaredField("ptr");
+                    recPtrField.setAccessible(true);
+                    long recPtr = recPtrField.getLong(recognizer);
+                    if (recPtr == 0) {
+                        throw new IOException("Recognizer native ptr is 0 — 模型載入失敗（靜默），請重新下載模型");
+                    }
+                    Log.i(TAG, "Recognizer native ptr = " + recPtr + " (valid)");
+                } catch (NoSuchFieldException | IllegalAccessException e) {
+                    Log.w(TAG, "Could not check native ptr via reflection: " + e.getMessage());
+                    // Continue anyway — if ptr is 0, the test below will crash
+                    // and we'll catch it (hopefully).
+                }
+
+                // Now test VAD with a small buffer
+                try {
+                    float[] testBuffer = new float[512];
+                    vad.acceptWaveform(testBuffer);
+                    vad.flush();
+                    Log.i(TAG, "VAD test acceptWaveform succeeded");
+                } catch (Throwable e) {
+                    Log.e(TAG, "VAD test failed", e);
+                    throw new IOException("VAD 測試失敗: " + e.getMessage()
+                            + " — 模型可能不相容，請嘗試重新下載", e);
+                }
+
                 audioBufferSize = Math.max(
                         AudioRecord.getMinBufferSize(SAMPLE_RATE,
                                 AudioFormat.CHANNEL_IN_MONO,
@@ -864,7 +903,18 @@ public class SherpaOnnxPlugin extends Plugin {
                         floatBuffer[i] = shortBuffer[i] / 32768.0f;
                     }
 
-                    vad.acceptWaveform(floatBuffer);
+                    // Wrap VAD call in try-catch — if native ptr becomes
+                    // invalid mid-recording, we catch it instead of crashing.
+                    try {
+                        vad.acceptWaveform(floatBuffer);
+                    } catch (Throwable e) {
+                        Log.e(TAG, "VAD acceptWaveform failed during recording", e);
+                        isListening.set(false);
+                        mainHandler.post(() -> {
+                            call.reject("語音辨識引擎異常: " + e.getMessage());
+                        });
+                        break;
+                    }
 
                     while (!vad.empty()) {
                         SpeechSegment segment = vad.front();
