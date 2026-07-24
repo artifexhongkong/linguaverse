@@ -7,18 +7,16 @@ android {
         applicationId "ai.linguaverse.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 9
-        versionName "1.1.0"
+        versionCode 10
+        versionName "1.1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
-            // Don't compress sherpa-onnx model files — they're already binary
-            // (.onnx is a protobuf format), compressing them wastes memory
-            // (234MB model → OOM during compressReleaseAssets) and CPU for
-            // zero size benefit.
-            noCompress 'onnx', 'txt'
+            // Model files are no longer bundled in the APK — they're
+            // downloaded on-demand via the Settings page. The .aar's
+            // native .so libs are handled by the standard ABI packaging.
         }
     }
 

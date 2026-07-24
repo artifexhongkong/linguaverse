@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   isOfflineSTTAvailable,
+  checkModels,
   startListening as offlineStart,
   stopListening as offlineStop,
   preInitialize as offlinePreInit,
@@ -40,6 +41,7 @@ const MAX_RECORD_SECONDS = 60;
 export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: VoiceInputProps) {
   const [state, setStateRaw] = useState<"idle" | "recording" | "transcribing" | "initializing">("idle");
   const [seconds, setSeconds] = useState(0);
+  const [modelsReady, setModelsReady] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const offlineAvailable = isOfflineSTTAvailable();
 
@@ -49,15 +51,22 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
   };
 
   // Pre-initialize the offline recognizer on mount (Android only).
-  // This avoids the ~10-30s delay on first tap.
+  // Also check if models are downloaded.
   useEffect(() => {
-    if (offlineAvailable) {
-      void offlinePreInit().catch(() => {});
-    }
+    if (!offlineAvailable) return;
+    let cancelled = false;
+    const init = async () => {
+      const modelState = await checkModels();
+      if (cancelled) return;
+      setModelsReady(modelState.downloaded);
+      if (modelState.downloaded) {
+        void offlinePreInit().catch(() => {});
+      }
+    };
+    init();
     return () => {
+      cancelled = true;
       if (timerRef.current) clearInterval(timerRef.current);
-      // Don't release the recognizer here — keep it alive for the
-      // app's lifetime. It's released on app exit.
     };
   }, [offlineAvailable]);
 
@@ -132,6 +141,16 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
     if (!offlineAvailable) {
       onToast("離線語音辨識僅支援 Android App");
       return;
+    }
+
+    // Check if models are downloaded
+    if (!modelsReady) {
+      const state = await checkModels();
+      if (!state.downloaded) {
+        onToast("請先到「設定」下載語音模型");
+        return;
+      }
+      setModelsReady(true);
     }
 
     void handleOfflineStart();

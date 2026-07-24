@@ -22,28 +22,94 @@ import {
   SherpaOnnx,
   isSherpaOnnxAvailable,
   type RecognitionResult,
+  type DownloadProgress as DownloadProgressType,
   type PluginListenerHandle,
 } from "../plugins/sherpa-onnx";
+
+/** Re-exported so SettingsPage can type its progress handler. */
+export type DownloadProgress = DownloadProgressType;
 
 let initPromise: Promise<void> | null = null;
 let resultListener: PluginListenerHandle | null = null;
 let pendingResultHandler: ((text: string, type: "result" | "final") => void) | null = null;
 
+// ----------------------------------------------------------------
+// Model management
+// ----------------------------------------------------------------
+
+/**
+ * Check if model files have been downloaded to internal storage.
+ * Returns { downloaded: false, totalBytes: 0 } on web.
+ */
+export async function checkModels(): Promise<{ downloaded: boolean; totalBytes: number }> {
+  if (!isSherpaOnnxAvailable()) return { downloaded: false, totalBytes: 0 };
+  try {
+    return await SherpaOnnx.areModelsDownloaded();
+  } catch {
+    return { downloaded: false, totalBytes: 0 };
+  }
+}
+
+/**
+ * Download model files (~236MB) from HuggingFace/GitHub.
+ * Reports progress via the onProgress callback.
+ *
+ * @param onProgress called with download progress updates
+ * @throws if download fails
+ */
+export async function downloadModels(
+  onProgress?: (p: DownloadProgress) => void,
+): Promise<void> {
+  if (!isSherpaOnnxAvailable()) {
+    throw new Error("離線語音辨識僅支援 Android App");
+  }
+
+  let progressListener: PluginListenerHandle | null = null;
+  if (onProgress) {
+    progressListener = await SherpaOnnx.addListener("onDownloadProgress", onProgress);
+  }
+
+  try {
+    await SherpaOnnx.downloadModels();
+  } finally {
+    if (progressListener) {
+      try { await progressListener.remove(); } catch {}
+    }
+  }
+}
+
+/**
+ * Delete downloaded model files (frees ~236MB).
+ */
+export async function deleteModels(): Promise<void> {
+  if (!isSherpaOnnxAvailable()) return;
+  // Reset init state since models are gone
+  initPromise = null;
+  try {
+    await SherpaOnnx.deleteModels();
+  } catch {}
+}
+
+// ----------------------------------------------------------------
+// Speech recognition
+// ----------------------------------------------------------------
+
 /**
  * Initialize the offline recognizer (idempotent — safe to call multiple
- * times). Returns immediately if already initialized.
+ * times). Models must be downloaded first via downloadModels().
  *
- * @throws if the native plugin isn't available (web) or init fails.
+ * @throws if the native plugin isn't available (web), models aren't
+ *         downloaded, or init fails.
  */
 export async function ensureInitialized(): Promise<void> {
   if (!isSherpaOnnxAvailable()) {
-    throw new Error("離線語音辨識僅支援 Android");
+    throw new Error("離線語音辨識僅支援 Android App");
   }
 
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // Set up result listener BEFORE init, so we don't miss early results
+    // Set up result listener BEFORE init
     if (!resultListener) {
       resultListener = await SherpaOnnx.addListener(
         "onRecognitionResult",
@@ -57,8 +123,10 @@ export async function ensureInitialized(): Promise<void> {
 
     const state = await SherpaOnnx.isInitialized();
     if (state.initialized) return;
+    if (!state.modelsDownloaded) {
+      throw new Error("語音模型尚未下載，請先到設定頁下載");
+    }
 
-    // Init is async — model files are copied + recognizer created
     const res = await SherpaOnnx.initSpeechRecognizer();
     if (!res.success && res.message !== "already initialized" && res.message !== "initializing") {
       throw new Error("語音引擎初始化失敗");
@@ -103,11 +171,13 @@ export function isOfflineSTTAvailable(): boolean {
 
 /**
  * Pre-initialize the recognizer (optional — call on app startup to
- * avoid the ~10-30s delay on first mic tap).
+ * avoid the ~5-10s delay on first mic tap, after models are downloaded).
  */
 export async function preInitialize(): Promise<void> {
   if (!isSherpaOnnxAvailable()) return;
   try {
+    const state = await SherpaOnnx.isInitialized();
+    if (!state.modelsDownloaded) return; // don't try to init without models
     await ensureInitialized();
   } catch (err) {
     console.warn("[offline-stt] pre-init failed (will retry on first use):", err);

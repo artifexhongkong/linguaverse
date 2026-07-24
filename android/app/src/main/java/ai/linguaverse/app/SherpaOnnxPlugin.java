@@ -15,7 +15,6 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import com.k2fsa.sherpa.onnx.FeatureConfig;
 import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
@@ -31,6 +30,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,21 +39,37 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * SherpaOnnxPlugin — offline STT via sherpa-onnx + SenseVoiceSmall.
  *
- * Kotlin data classes have default values for all params, so we use the
- * no-arg constructor + setters (Java sees Kotlin `var` as getX/setX).
+ * Model files are NOT bundled in the APK (keeps APK ~3MB instead of 266MB).
+ * Users download them on-demand via the Settings page → downloadModels().
  *
- * Key API notes (verified from v1.10.40 Kotlin source):
- *   - OfflineRecognizer(null, config) — first arg is nullable AssetManager
- *   - vad.acceptWaveform(float[]) — NO sampleRate param (uses config's rate)
- *   - recognizer.decode(stream) returns void — call getResult(stream) after
- *   - vad.empty() not isEmpty()
+ * Model files (stored in app's internal files dir /sherpa-models/):
+ *   - sense-voice/model.int8.onnx  (~234MB)
+ *   - sense-voice/tokens.txt       (~300KB)
+ *   - silero-vad/silero_vad.onnx   (~1.8MB)
+ *
+ * Download sources:
+ *   - SenseVoiceSmall: HuggingFace csukuangfj/sherpa-onnx-sense-voice-...
+ *   - Silero VAD: GitHub k2-fsa/sherpa-onnx releases
  */
 @CapacitorPlugin(name = "SherpaOnnx")
 public class SherpaOnnxPlugin extends Plugin {
 
     private static final String TAG = "SherpaOnnx";
-    private static final String ASSET_DIR = "sherpa-models";
+    private static final String MODEL_DIR = "sherpa-models";
     private static final int SAMPLE_RATE = 16000;
+
+    // Download URLs — public mirrors, no auth required.
+    private static final String SENSE_VOICE_BASE =
+            "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
+    private static final String VAD_URL =
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+
+    // Files to download (relative path under MODEL_DIR → download URL)
+    private static final String[][] DOWNLOAD_FILES = {
+            {"sense-voice/model.int8.onnx", SENSE_VOICE_BASE + "/model.int8.onnx"},
+            {"sense-voice/tokens.txt",      SENSE_VOICE_BASE + "/tokens.txt"},
+            {"silero-vad/silero_vad.onnx",  VAD_URL},
+    };
 
     private OfflineRecognizer recognizer;
     private Vad vad;
@@ -63,6 +80,7 @@ public class SherpaOnnxPlugin extends Plugin {
     private final AtomicBoolean isListening = new AtomicBoolean(false);
     private final AtomicBoolean isInitialized = new AtomicBoolean(false);
     private final AtomicBoolean isInitializing = new AtomicBoolean(false);
+    private final AtomicBoolean isDownloading = new AtomicBoolean(false);
 
     @Override
     public void load() {
@@ -93,6 +111,200 @@ public class SherpaOnnxPlugin extends Plugin {
         isInitialized.set(false);
     }
 
+    // ----------------------------------------------------------------
+    // Model management
+    // ----------------------------------------------------------------
+
+    private File getModelsDir() {
+        return new File(getContext().getFilesDir(), MODEL_DIR);
+    }
+
+    /**
+     * Check if all required model files exist in internal storage.
+     */
+    private boolean areModelsDownloaded() {
+        File dir = getModelsDir();
+        for (String[] entry : DOWNLOAD_FILES) {
+            File f = new File(dir, entry[0]);
+            if (!f.exists() || f.length() == 0) return false;
+        }
+        return true;
+    }
+
+    /**
+     * downloadModels — download model files from HuggingFace/GitHub to
+     * internal storage. Reports progress via "onDownloadProgress" event.
+     *
+     * Progress events:
+     *   { phase: "downloading", file: "...", received: N, total: M, percent: P }
+     *   { phase: "done", totalBytes: N }
+     *   { phase: "error", message: "..." }
+     */
+    @PluginMethod
+    public void downloadModels(PluginCall call) {
+        if (isDownloading.get()) {
+            call.reject("download already in progress");
+            return;
+        }
+        isDownloading.set(true);
+
+        inferenceExecutor.execute(() -> {
+            try {
+                File dir = getModelsDir();
+                long totalBytes = 0;
+
+                for (String[] entry : DOWNLOAD_FILES) {
+                    String relPath = entry[0];
+                    String url = entry[1];
+                    File outFile = new File(dir, relPath);
+                    outFile.getParentFile().mkdirs();
+
+                    // Skip if already downloaded (idempotent — supports resume)
+                    if (outFile.exists() && outFile.length() > 0) {
+                        Log.i(TAG, "SKIP (exists): " + outFile);
+                        totalBytes += outFile.length();
+                        continue;
+                    }
+
+                    Log.i(TAG, "Downloading " + url + " → " + outFile);
+                    final String currentFile = relPath;
+                    totalBytes += downloadFile(url, outFile, (received, total) -> {
+                        // Post progress to JS
+                        int percent = total > 0 ? (int)(received * 100 / total) : 0;
+                        JSObject prog = new JSObject();
+                        prog.put("phase", "downloading");
+                        prog.put("file", currentFile);
+                        prog.put("received", received);
+                        prog.put("total", total);
+                        prog.put("percent", percent);
+                        notifyListeners("onDownloadProgress", prog);
+                    });
+                }
+
+                JSObject done = new JSObject();
+                done.put("phase", "done");
+                done.put("totalBytes", totalBytes);
+                mainHandler.post(() -> {
+                    notifyListeners("onDownloadProgress", done);
+                    call.resolve(new JSObject().put("success", true).put("totalBytes", totalBytes));
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "download failed", e);
+                JSObject err = new JSObject();
+                err.put("phase", "error");
+                err.put("message", e.getMessage());
+                mainHandler.post(() -> {
+                    notifyListeners("onDownloadProgress", err);
+                    call.reject("download failed: " + e.getMessage());
+                });
+            } finally {
+                isDownloading.set(false);
+            }
+        });
+    }
+
+    /**
+     * Download a single file with progress callback. Supports HTTP redirects
+     * (HuggingFace and GitHub use 302 redirects to CDN).
+     */
+    private long downloadFile(String urlStr, File outFile, ProgressCallback cb) throws IOException {
+        HttpURLConnection conn = null;
+        InputStream in = null;
+        FileOutputStream out = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(30000);
+            conn.setReadTimeout(60000);
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("User-Agent", "LinguaVerse/1.0");
+
+            int response = conn.getResponseCode();
+            if (response != 200) {
+                throw new IOException("HTTP " + response + " for " + urlStr);
+            }
+
+            long total = conn.getContentLength();
+            in = conn.getInputStream();
+            out = new FileOutputStream(outFile);
+
+            byte[] buf = new byte[81920];
+            long received = 0;
+            int lastReportPercent = -1;
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+                received += len;
+                // Report progress at most every 5% to avoid flooding
+                int percent = total > 0 ? (int)(received * 100 / total) : 0;
+                if (percent != lastReportPercent && percent % 5 == 0) {
+                    lastReportPercent = percent;
+                    cb.onProgress(received, total);
+                }
+            }
+            out.flush();
+            Log.i(TAG, "Downloaded " + outFile.getName() + ": " + (received / 1024 / 1024) + " MB");
+            return received;
+        } finally {
+            if (in != null) try { in.close(); } catch (Exception ignored) {}
+            if (out != null) try { out.close(); } catch (Exception ignored) {}
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private interface ProgressCallback {
+        void onProgress(long received, long total);
+    }
+
+    /**
+     * areModelsDownloaded — check if models exist (for Settings UI).
+     */
+    @PluginMethod
+    public void areModelsDownloaded(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("downloaded", areModelsDownloaded());
+        File dir = getModelsDir();
+        long size = 0;
+        if (dir.exists()) {
+            for (String[] entry : DOWNLOAD_FILES) {
+                File f = new File(dir, entry[0]);
+                if (f.exists()) size += f.length();
+            }
+        }
+        ret.put("totalBytes", size);
+        call.resolve(ret);
+    }
+
+    /**
+     * deleteModels — remove downloaded models (for Settings "clear" button).
+     */
+    @PluginMethod
+    public void deleteModels(PluginCall call) {
+        // Release recognizer first if initialized
+        if (recognizer != null) { try { recognizer.release(); } catch (Exception ignored) {} recognizer = null; }
+        if (vad != null) { try { vad.release(); } catch (Exception ignored) {} vad = null; }
+        isInitialized.set(false);
+
+        File dir = getModelsDir();
+        long freed = 0;
+        if (dir.exists()) {
+            for (String[] entry : DOWNLOAD_FILES) {
+                File f = new File(dir, entry[0]);
+                if (f.exists()) { freed += f.length(); f.delete(); }
+            }
+        }
+        Log.i(TAG, "Deleted models, freed " + (freed / 1024 / 1024) + " MB");
+        call.resolve(new JSObject().put("success", true).put("freedBytes", freed));
+    }
+
+    // ----------------------------------------------------------------
+    // Speech recognition
+    // ----------------------------------------------------------------
+
+    /**
+     * initSpeechRecognizer — async model loading.
+     * Models must be downloaded first via downloadModels().
+     */
     @PluginMethod
     public void initSpeechRecognizer(PluginCall call) {
         if (isInitialized.get()) {
@@ -103,22 +315,21 @@ public class SherpaOnnxPlugin extends Plugin {
             call.resolve(new JSObject().put("success", true).put("message", "initializing"));
             return;
         }
-        isInitializing.set(true);
 
+        if (!areModelsDownloaded()) {
+            call.reject("models not downloaded — call downloadModels() first");
+            return;
+        }
+
+        isInitializing.set(true);
         inferenceExecutor.execute(() -> {
             try {
-                Context ctx = getContext();
-                File modelsDir = new File(ctx.getFilesDir(), ASSET_DIR);
-                copyAssetsToInternal(ctx, ASSET_DIR, modelsDir);
+                File dir = getModelsDir();
+                String modelPath = new File(dir, "sense-voice/model.int8.onnx").getAbsolutePath();
+                String tokensPath = new File(dir, "sense-voice/tokens.txt").getAbsolutePath();
+                String vadModelPath = new File(dir, "silero-vad/silero_vad.onnx").getAbsolutePath();
 
-                String modelPath = new File(modelsDir, "sense-voice/model.int8.onnx").getAbsolutePath();
-                String tokensPath = new File(modelsDir, "sense-voice/tokens.txt").getAbsolutePath();
-                String vadModelPath = new File(modelsDir, "silero-vad/silero_vad.onnx").getAbsolutePath();
-                verifyFile(modelPath);
-                verifyFile(tokensPath);
-                verifyFile(vadModelPath);
-
-                // --- Build OfflineRecognizerConfig (no-arg + setters) ---
+                // OfflineSenseVoiceModelConfig
                 OfflineSenseVoiceModelConfig senseVoice = new OfflineSenseVoiceModelConfig();
                 senseVoice.setModel(modelPath);
                 senseVoice.setLanguage("auto");
@@ -133,20 +344,17 @@ public class SherpaOnnxPlugin extends Plugin {
 
                 OfflineRecognizerConfig recognizerConfig = new OfflineRecognizerConfig();
                 recognizerConfig.setModelConfig(modelConfig);
-                // featConfig defaults to FeatureConfig() with sampleRate=16000
 
                 Log.i(TAG, "Creating OfflineRecognizer (SenseVoiceSmall, NNAPI, threads=2)...");
-                // Constructor: OfflineRecognizer(AssetManager? = null, config)
-                // From Java, pass null for the first arg to use file-based loading.
                 recognizer = new OfflineRecognizer(null, recognizerConfig);
 
-                // --- Build VadModelConfig (no-arg + setters) ---
+                // SileroVadModelConfig
                 SileroVadModelConfig sileroVad = new SileroVadModelConfig();
                 sileroVad.setModel(vadModelPath);
                 sileroVad.setThreshold(0.5f);
-                sileroVad.setMinSilenceDuration(500f);   // ms
-                sileroVad.setMinSpeechDuration(100f);     // ms
-                sileroVad.setMaxSpeechDuration(30000f);   // ms (30s cap)
+                sileroVad.setMinSilenceDuration(500f);
+                sileroVad.setMinSpeechDuration(100f);
+                sileroVad.setMaxSpeechDuration(30000f);
 
                 VadModelConfig vadConfig = new VadModelConfig();
                 vadConfig.setSileroVadModelConfig(sileroVad);
@@ -207,27 +415,22 @@ public class SherpaOnnxPlugin extends Plugin {
                     int read = audioRecord.read(shortBuffer, 0, shortBuffer.length);
                     if (read <= 0) continue;
 
-                    // short[] → float[] (normalized)
                     float[] floatBuffer = new float[read];
                     for (int i = 0; i < read; i++) {
                         floatBuffer[i] = shortBuffer[i] / 32768.0f;
                     }
 
-                    // VAD accepts float[] (no sampleRate — uses config's rate)
                     vad.acceptWaveform(floatBuffer);
 
-                    // Drain VAD segments → recognize
                     while (!vad.empty()) {
                         SpeechSegment segment = vad.front();
                         vad.pop();
-
                         float[] samples = segment.getSamples();
                         if (samples.length < SAMPLE_RATE / 4) continue;
 
-                        // Create stream → feed samples → decode → get result
                         OfflineStream stream = recognizer.createStream();
                         stream.acceptWaveform(samples, SAMPLE_RATE);
-                        recognizer.decode(stream);  // void — triggers recognition
+                        recognizer.decode(stream);
                         OfflineRecognizerResult result = recognizer.getResult(stream);
                         stream.release();
 
@@ -245,7 +448,6 @@ public class SherpaOnnxPlugin extends Plugin {
                     }
                 }
 
-                // Flush remaining VAD audio
                 vad.flush();
                 while (!vad.empty()) {
                     SpeechSegment segment = vad.front();
@@ -302,6 +504,7 @@ public class SherpaOnnxPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("initialized", isInitialized.get());
         ret.put("initializing", isInitializing.get());
+        ret.put("modelsDownloaded", areModelsDownloaded());
         call.resolve(ret);
     }
 
@@ -309,40 +512,5 @@ public class SherpaOnnxPlugin extends Plugin {
     public void release(PluginCall call) {
         cleanup();
         call.resolve(new JSObject().put("success", true));
-    }
-
-    private void verifyFile(String path) throws IOException {
-        File f = new File(path);
-        if (!f.exists() || f.length() == 0) {
-            throw new IOException("Model file missing or empty: " + path);
-        }
-        Log.i(TAG, "Verified: " + path + " (" + (f.length() / 1024 / 1024) + " MB)");
-    }
-
-    private void copyAssetsToInternal(Context ctx, String assetPath, File outDir) throws IOException {
-        outDir.mkdirs();
-        AssetManager am = ctx.getAssets();
-        String[] children = am.list(assetPath);
-        if (children == null || children.length == 0) return;
-        for (String child : children) {
-            String childAsset = assetPath + "/" + child;
-            String[] subChildren = am.list(childAsset);
-            if (subChildren != null && subChildren.length > 0) {
-                copyAssetsToInternal(ctx, childAsset, new File(outDir, child));
-            } else {
-                File outFile = new File(outDir, child);
-                if (outFile.exists() && outFile.length() > 0) {
-                    Log.i(TAG, "SKIP (exists): " + outFile);
-                    continue;
-                }
-                Log.i(TAG, "Copying: " + childAsset);
-                try (InputStream in = am.open(childAsset);
-                     FileOutputStream out = new FileOutputStream(outFile)) {
-                    byte[] buf = new byte[81920];
-                    int len;
-                    while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
-                }
-            }
-        }
     }
 }
