@@ -58,17 +58,48 @@ public class SherpaOnnxPlugin extends Plugin {
     private static final String MODEL_DIR = "sherpa-models";
     private static final int SAMPLE_RATE = 16000;
 
-    // Download URLs — public mirrors, no auth required.
-    private static final String SENSE_VOICE_BASE =
+    // Download sources — multiple mirrors for reliability.
+    //
+    // Primary: GitHub Releases (our own repo — most reliable, supports
+    //          Range/resume, no rate limits for public repos).
+    // Mirror 1: ghproxy.com — a GitHub proxy popular in mainland China
+    //          to bypass GFW throttling on github.com.
+    // Mirror 2: HuggingFace (original source — works everywhere except
+    //          mainland China where HF is often blocked).
+    //
+    // The download logic tries each mirror in order until one succeeds.
+    private static final String GITHUB_RELEASES_BASE =
+            "https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1";
+    private static final String GHPROXY_BASE =
+            "https://ghproxy.com/https://github.com/artifexhongkong/linguaverse/releases/download/sherpa-models-v1";
+    private static final String HUGGINGFACE_BASE =
             "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
-    private static final String VAD_URL =
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 
-    // Files to download (relative path under MODEL_DIR → download URL)
+    // Files to download (relative path → list of mirror URLs, tried in order)
     private static final String[][] DOWNLOAD_FILES = {
-            {"sense-voice/model.int8.onnx", SENSE_VOICE_BASE + "/model.int8.onnx"},
-            {"sense-voice/tokens.txt",      SENSE_VOICE_BASE + "/tokens.txt"},
-            {"silero-vad/silero_vad.onnx",  VAD_URL},
+            {"sense-voice/model.int8.onnx", GITHUB_RELEASES_BASE + "/model.int8.onnx"},
+            {"sense-voice/tokens.txt",      GITHUB_RELEASES_BASE + "/tokens.txt"},
+            {"silero-vad/silero_vad.onnx",  GITHUB_RELEASES_BASE + "/silero_vad.onnx"},
+    };
+
+    // Mirror URLs for each file (used if primary GitHub URL fails).
+    // Order: GitHub → ghproxy (China mirror) → HuggingFace (fallback).
+    private static final String[][] MIRROR_URLS = {
+            {   // model.int8.onnx
+                    GITHUB_RELEASES_BASE + "/model.int8.onnx",
+                    GHPROXY_BASE + "/model.int8.onnx",
+                    HUGGINGFACE_BASE + "/model.int8.onnx",
+            },
+            {   // tokens.txt
+                    GITHUB_RELEASES_BASE + "/tokens.txt",
+                    GHPROXY_BASE + "/tokens.txt",
+                    HUGGINGFACE_BASE + "/tokens.txt",
+            },
+            {   // silero_vad.onnx
+                    GITHUB_RELEASES_BASE + "/silero_vad.onnx",
+                    GHPROXY_BASE + "/silero_vad.onnx",
+                    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+            },
     };
 
     private OfflineRecognizer recognizer;
@@ -160,12 +191,14 @@ public class SherpaOnnxPlugin extends Plugin {
             org.json.JSONArray urls = new org.json.JSONArray();
             boolean allOk = true;
 
-            for (String[] entry : DOWNLOAD_FILES) {
-                String relPath = entry[0];
-                String urlStr = entry[1];
+            for (int fileIdx = 0; fileIdx < DOWNLOAD_FILES.length; fileIdx++) {
+                String relPath = DOWNLOAD_FILES[fileIdx][0];
+                // Test the PRIMARY (first) mirror URL
+                String urlStr = MIRROR_URLS[fileIdx][0];
                 JSObject item = new JSObject();
                 item.put("file", relPath);
                 item.put("url", urlStr);
+                item.put("mirrorCount", MIRROR_URLS[fileIdx].length);
                 try {
                     URL url = new URL(urlStr);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -176,8 +209,6 @@ public class SherpaOnnxPlugin extends Plugin {
                     conn.setRequestProperty("User-Agent", "LinguaVerse/1.1");
                     conn.setRequestProperty("Range", "bytes=0-0");
                     int code = conn.getResponseCode();
-                    // Content-Range header tells us the total file size
-                    // (format: "bytes 0-0/239233841")
                     String contentRange = conn.getHeaderField("Content-Range");
                     long size = -1;
                     if (contentRange != null && contentRange.contains("/")) {
@@ -190,21 +221,17 @@ public class SherpaOnnxPlugin extends Plugin {
                     }
                     item.put("status", code);
                     item.put("size", size);
-                    // 200 = full content, 206 = partial (Range worked),
-                    // 301/302/303/307/308 = redirect (downloadFile handles these)
                     boolean ok = code == 200 || code == 206
                             || code == 301 || code == 302 || code == 303
                             || code == 307 || code == 308;
                     item.put("ok", ok);
                     if (!ok) allOk = false;
-                    // Drain & close any stream to allow connection reuse
                     try {
                         InputStream is = conn.getInputStream();
                         if (is != null) is.close();
                     } catch (Exception ignored) {}
                     conn.disconnect();
-                    Log.i(TAG, "testConnection: " + relPath + " → HTTP " + code
-                            + " (size=" + size + ", contentRange=" + contentRange + ")");
+                    Log.i(TAG, "testConnection: " + relPath + " → HTTP " + code + " (size=" + size + ")");
                 } catch (Exception e) {
                     item.put("status", -1);
                     item.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -254,30 +281,54 @@ public class SherpaOnnxPlugin extends Plugin {
                 }
                 long totalBytes = 0;
 
-                for (String[] entry : DOWNLOAD_FILES) {
-                    String relPath = entry[0];
-                    String url = entry[1];
+                for (int fileIdx = 0; fileIdx < DOWNLOAD_FILES.length; fileIdx++) {
+                    String relPath = DOWNLOAD_FILES[fileIdx][0];
                     File outFile = new File(dir, relPath);
                     outFile.getParentFile().mkdirs();
 
-                    Log.i(TAG, "Downloading " + url + " → " + outFile);
+                    Log.i(TAG, "Downloading " + relPath + " → " + outFile);
                     final String currentFile = relPath;
-                    totalBytes += downloadFile(url, outFile, (received, total) -> {
-                        // Post progress to JS on the MAIN thread
-                        int percent = total > 0 ? (int)(received * 100 / total) : 0;
-                        final int finalPercent = percent;
-                        final long finalReceived = received;
-                        final long finalTotal = total;
-                        mainHandler.post(() -> {
-                            JSObject prog = new JSObject();
-                            prog.put("phase", "downloading");
-                            prog.put("file", currentFile);
-                            prog.put("received", finalReceived);
-                            prog.put("total", finalTotal);
-                            prog.put("percent", finalPercent);
-                            notifyListeners("onDownloadProgress", prog);
-                        });
-                    });
+
+                    // Try each mirror URL until one succeeds
+                    String[] mirrors = MIRROR_URLS[fileIdx];
+                    boolean downloaded = false;
+                    Exception lastErr = null;
+
+                    for (int mirrorIdx = 0; mirrorIdx < mirrors.length; mirrorIdx++) {
+                        String mirrorUrl = mirrors[mirrorIdx];
+                        Log.i(TAG, "  Trying mirror " + (mirrorIdx + 1) + "/" + mirrors.length
+                                + ": " + mirrorUrl.substring(0, Math.min(80, mirrorUrl.length())));
+                        try {
+                            long bytes = downloadFile(mirrorUrl, outFile, (received, total) -> {
+                                int percent = total > 0 ? (int)(received * 100 / total) : 0;
+                                final int finalPercent = percent;
+                                final long finalReceived = received;
+                                final long finalTotal = total;
+                                mainHandler.post(() -> {
+                                    JSObject prog = new JSObject();
+                                    prog.put("phase", "downloading");
+                                    prog.put("file", currentFile);
+                                    prog.put("received", finalReceived);
+                                    prog.put("total", finalTotal);
+                                    prog.put("percent", finalPercent);
+                                    notifyListeners("onDownloadProgress", prog);
+                                });
+                            });
+                            totalBytes += bytes;
+                            downloaded = true;
+                            Log.i(TAG, "  ✓ Mirror " + (mirrorIdx + 1) + " succeeded: " + bytes + " bytes");
+                            break; // success, move to next file
+                        } catch (Exception e) {
+                            lastErr = e;
+                            Log.w(TAG, "  ✗ Mirror " + (mirrorIdx + 1) + " failed: " + e.getMessage());
+                            // Continue to next mirror
+                        }
+                    }
+
+                    if (!downloaded) {
+                        throw new IOException("所有下載源都失敗: " + relPath
+                                + " — 最後錯誤: " + (lastErr != null ? lastErr.getMessage() : "unknown"));
+                    }
                 }
 
                 Log.i(TAG, "All downloads complete, total=" + totalBytes);
@@ -326,23 +377,27 @@ public class SherpaOnnxPlugin extends Plugin {
 
         long existingBytes = outFile.exists() ? outFile.length() : 0;
 
+        // Try up to 2 times per mirror (1 retry for transient network issues).
+        // The caller (downloadModels) handles mirror rotation, so we don't
+        // need many retries here — 2 is enough for transient failures.
         Exception lastError = null;
-        for (int attempt = 1; attempt <= 3; attempt++) {
+        for (int attempt = 1; attempt <= 2; attempt++) {
             try {
                 long downloaded = downloadFileOnce(urlStr, outFile, cb, existingBytes);
                 return downloaded;
             } catch (Exception e) {
                 lastError = e;
                 Log.w(TAG, "Download attempt " + attempt + " failed for " + outFile.getName()
+                        + " from " + urlStr.substring(0, Math.min(60, urlStr.length()))
                         + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 // Update existingBytes for resume on next attempt
                 existingBytes = outFile.exists() ? outFile.length() : 0;
-                if (attempt < 3) {
-                    try { Thread.sleep(2000L * attempt); } catch (InterruptedException ignored) {}
+                if (attempt < 2) {
+                    try { Thread.sleep(2000L); } catch (InterruptedException ignored) {}
                 }
             }
         }
-        throw new IOException("下載失敗（重試 3 次）: " + lastError.getClass().getSimpleName()
+        throw new IOException("下載失敗: " + lastError.getClass().getSimpleName()
                 + " — " + lastError.getMessage(), lastError);
     }
 
