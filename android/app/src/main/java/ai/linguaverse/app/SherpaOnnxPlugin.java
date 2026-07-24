@@ -184,9 +184,10 @@ public class SherpaOnnxPlugin extends Plugin {
                 JSObject done = new JSObject();
                 done.put("phase", "done");
                 done.put("totalBytes", totalBytes);
+                final long finalTotalBytes = totalBytes;
                 mainHandler.post(() -> {
                     notifyListeners("onDownloadProgress", done);
-                    call.resolve(new JSObject().put("success", true).put("totalBytes", totalBytes));
+                    call.resolve(new JSObject().put("success", true).put("totalBytes", finalTotalBytes));
                 });
             } catch (Exception e) {
                 Log.e(TAG, "download failed", e);
