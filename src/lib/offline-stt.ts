@@ -24,6 +24,7 @@ import {
   type RecognitionResult,
   type DownloadProgress as DownloadProgressType,
   type ConnectionTestResult,
+  type NativeLibTestResult,
   type PluginListenerHandle,
 } from "../plugins/sherpa-onnx";
 
@@ -48,6 +49,20 @@ export async function checkModels(): Promise<{ downloaded: boolean; totalBytes: 
     return await SherpaOnnx.areModelsDownloaded();
   } catch {
     return { downloaded: false, totalBytes: 0 };
+  }
+}
+
+/**
+ * Diagnostic: test if native library loaded + class is accessible.
+ * Call this BEFORE initSpeechRecognizer to verify the plugin works.
+ */
+export async function testNativeLib(): Promise<NativeLibTestResult | null> {
+  if (!isSherpaOnnxAvailable()) return null;
+  try {
+    return await SherpaOnnx.testNativeLib();
+  } catch (err) {
+    console.error("[offline-stt] testNativeLib failed:", err);
+    return null;
   }
 }
 

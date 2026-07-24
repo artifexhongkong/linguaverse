@@ -61,7 +61,18 @@ export interface ConnectionTestResult {
   }>;
 }
 
+export interface NativeLibTestResult {
+  nativeLibLoaded: boolean;
+  nativeLibError: string;
+  modelsDownloaded: boolean;
+  classFound: boolean;
+  classError?: string;
+  supportedAbis?: string[];
+}
+
 export interface SherpaOnnxPlugin {
+  /** Diagnostic: test if native library loaded + class is accessible. */
+  testNativeLib(): Promise<NativeLibTestResult>;
   /** Diagnostic: test network connectivity to all download URLs. */
   testConnection(): Promise<ConnectionTestResult>;
   /** Download model files (~236MB) from HuggingFace/GitHub to internal storage. */

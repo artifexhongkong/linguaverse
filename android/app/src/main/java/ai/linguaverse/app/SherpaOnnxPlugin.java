@@ -669,6 +669,41 @@ public class SherpaOnnxPlugin extends Plugin {
     // ----------------------------------------------------------------
 
     /**
+     * testNativeLib — diagnostic method that checks if the native
+     * library loaded successfully. Call this BEFORE initSpeechRecognizer
+     * to verify the plugin is functional.
+     *
+     * Returns:
+     *   { nativeLibLoaded: true/false, nativeLibError: "...", modelsDownloaded: bool }
+     */
+    @PluginMethod
+    public void testNativeLib(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("nativeLibLoaded", nativeLibError == null);
+        ret.put("nativeLibError", nativeLibError != null ? nativeLibError : "");
+        ret.put("modelsDownloaded", areModelsDownloaded());
+
+        // Also try to load the class to trigger any static initializer
+        try {
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineRecognizer");
+            ret.put("classFound", true);
+        } catch (Throwable e) {
+            ret.put("classFound", false);
+            ret.put("classError", e.getMessage());
+        }
+
+        // Check available ABIs
+        try {
+            String[] abis = android.os.Build.SUPPORTED_ABIS;
+            org.json.JSONArray abiArray = new org.json.JSONArray();
+            for (String abi : abis) abiArray.put(abi);
+            ret.put("supportedAbis", abiArray);
+        } catch (Exception ignored) {}
+
+        call.resolve(ret);
+    }
+
+    /**
      * initSpeechRecognizer — async model loading.
      * Models must be downloaded first via downloadModels().
      *

@@ -6,6 +6,7 @@ import {
   stopListening as offlineStop,
   preInitialize as offlinePreInit,
   release as offlineRelease,
+  testNativeLib,
 } from "../lib/offline-stt";
 
 /**
@@ -93,8 +94,28 @@ export function VoiceInput({ onTranscribed, onToast, disabled, onStateChange }: 
   const handleOfflineStart = async () => {
     setState("initializing");
     try {
+      // Step 1: Test native lib BEFORE anything else
+      const nativeTest = await testNativeLib();
+      if (nativeTest) {
+        if (!nativeTest.nativeLibLoaded) {
+          onToast(`原生庫載入失敗: ${nativeTest.nativeLibError || "未知錯誤"}`);
+          setState("idle");
+          return;
+        }
+        if (!nativeTest.classFound) {
+          onToast("sherpa-onnx 類別找不到，APK 可能安裝不完整");
+          setState("idle");
+          return;
+        }
+        if (!nativeTest.modelsDownloaded) {
+          onToast("模型未下載或檔案不完整，請到設定重新下載");
+          setState("idle");
+          return;
+        }
+      }
+
+      // Step 2: Start listening
       await offlineStart((text, type) => {
-        // Each recognized segment is appended to the input
         if (text) onTranscribed(text);
         if (type === "result") {
           onToast("識別中…");
