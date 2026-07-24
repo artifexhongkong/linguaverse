@@ -6,6 +6,7 @@ import {
   checkModels,
   downloadModels,
   deleteModels,
+  testConnection,
   type DownloadProgress,
 } from "../lib/offline-stt";
 
@@ -56,6 +57,24 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
     if (downloading) return;
     setDownloading(true);
     setProgress(null);
+
+    // Step 1: Test network connectivity first (fast, ~1s)
+    onToast("正在測試連線…");
+    const conn = await testConnection();
+    if (conn) {
+      if (!conn.allOk) {
+        const failed = conn.urls.filter((u) => !u.ok);
+        const errMsg = failed.length > 0
+          ? `無法連線：${failed[0].error || `HTTP ${failed[0].status}`}`
+          : "網路連線失敗";
+        onToast(errMsg);
+        setDownloading(false);
+        return;
+      }
+      onToast("連線正常，開始下載…");
+    }
+
+    // Step 2: Download models
     try {
       await downloadModels((p) => {
         setProgress(p);
@@ -68,9 +87,16 @@ export function SettingsPage({ settings, quotaUsed, quotaLimit, onUpgrade, onToa
       setModelBytes(state.totalBytes);
       if (state.downloaded) {
         onToast("語音模型下載完成");
+      } else {
+        onToast("下載似乎完成，但模型檔案不完整");
       }
     } catch (err) {
-      onToast(err instanceof Error ? err.message : "下載失敗，請檢查網路後重試");
+      const msg = err instanceof Error ? err.message : "下載失敗，請檢查網路後重試";
+      onToast(msg);
+      // Re-check model state in case partial download succeeded
+      const state = await checkModels();
+      setModelsDownloaded(state.downloaded);
+      setModelBytes(state.totalBytes);
     } finally {
       setDownloading(false);
       setProgress(null);

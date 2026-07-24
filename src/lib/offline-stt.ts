@@ -23,6 +23,7 @@ import {
   isSherpaOnnxAvailable,
   type RecognitionResult,
   type DownloadProgress as DownloadProgressType,
+  type ConnectionTestResult,
   type PluginListenerHandle,
 } from "../plugins/sherpa-onnx";
 
@@ -47,6 +48,20 @@ export async function checkModels(): Promise<{ downloaded: boolean; totalBytes: 
     return await SherpaOnnx.areModelsDownloaded();
   } catch {
     return { downloaded: false, totalBytes: 0 };
+  }
+}
+
+/**
+ * Diagnostic: test network connectivity to all download URLs.
+ * Useful for diagnosing download failures without downloading 234MB.
+ */
+export async function testConnection(): Promise<ConnectionTestResult | null> {
+  if (!isSherpaOnnxAvailable()) return null;
+  try {
+    return await SherpaOnnx.testConnection();
+  } catch (err) {
+    console.error("[offline-stt] testConnection failed:", err);
+    return null;
   }
 }
 

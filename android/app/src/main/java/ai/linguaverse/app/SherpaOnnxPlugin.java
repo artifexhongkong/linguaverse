@@ -140,6 +140,72 @@ public class SherpaOnnxPlugin extends Plugin {
      *   { phase: "done", totalBytes: N }
      *   { phase: "error", message: "..." }
      */
+    /**
+     * testConnection — diagnostic method that pings all download URLs
+     * and returns the HTTP status for each. Useful for diagnosing
+     * network issues without downloading 234MB.
+     */
+    @PluginMethod
+    public void testConnection(PluginCall call) {
+        inferenceExecutor.execute(() -> {
+            JSObject result = new JSObject();
+            org.json.JSONArray urls = new org.json.JSONArray();
+            boolean allOk = true;
+
+            for (String[] entry : DOWNLOAD_FILES) {
+                String relPath = entry[0];
+                String urlStr = entry[1];
+                JSObject item = new JSObject();
+                item.put("file", relPath);
+                item.put("url", urlStr);
+                try {
+                    URL url = new URL(urlStr);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(15000);
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setRequestMethod("HEAD");
+                    conn.setRequestProperty("User-Agent", "LinguaVerse/1.1");
+                    int code = conn.getResponseCode();
+                    long size = conn.getContentLength();
+                    item.put("status", code);
+                    item.put("size", size);
+                    item.put("ok", code == 200 || code == 301 || code == 302);
+                    if (code != 200 && code != 301 && code != 302) allOk = false;
+                    conn.disconnect();
+                    Log.i(TAG, "testConnection: " + relPath + " → HTTP " + code + " (size=" + size + ")");
+                } catch (Exception e) {
+                    item.put("status", -1);
+                    item.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                    item.put("ok", false);
+                    allOk = false;
+                    Log.e(TAG, "testConnection failed for " + relPath, e);
+                }
+                urls.put(item);
+            }
+
+            result.put("urls", urls);
+            result.put("allOk", allOk);
+            result.put("modelsDir", getModelsDir().getAbsolutePath());
+            result.put("modelsDirExists", getModelsDir().exists());
+            result.put("modelsDirWritable", getModelsDir().canWrite() || getModelsDir().getParentFile().canWrite());
+
+            final boolean finalAllOk = allOk;
+            mainHandler.post(() -> {
+                call.resolve(result);
+            });
+        });
+    }
+
+    /**
+     * downloadModels — download model files from HuggingFace/GitHub to
+     * internal storage. Reports progress via "onDownloadProgress" event.
+     *
+     * Progress events:
+     *   { phase: "downloading", file: "...", received: N, total: M, percent: P }
+     *   { phase: "done", totalBytes: N }
+     *   { phase: "error", message: "..." }
+     */
     @PluginMethod
     public void downloadModels(PluginCall call) {
         if (isDownloading.get()) {
@@ -148,9 +214,14 @@ public class SherpaOnnxPlugin extends Plugin {
         }
         isDownloading.set(true);
 
+        // Save the call so we can resolve/reject it from the background thread.
+        // Capacitor's PluginCall is safe to call from any thread.
         inferenceExecutor.execute(() -> {
             try {
                 File dir = getModelsDir();
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new IOException("無法建立模型目錄: " + dir.getAbsolutePath());
+                }
                 long totalBytes = 0;
 
                 for (String[] entry : DOWNLOAD_FILES) {
@@ -162,9 +233,7 @@ public class SherpaOnnxPlugin extends Plugin {
                     Log.i(TAG, "Downloading " + url + " → " + outFile);
                     final String currentFile = relPath;
                     totalBytes += downloadFile(url, outFile, (received, total) -> {
-                        // Post progress to JS on the MAIN thread (notifyListeners
-                        // is not thread-safe — calling it from a background thread
-                        // can cause race conditions or missing events).
+                        // Post progress to JS on the MAIN thread
                         int percent = total > 0 ? (int)(received * 100 / total) : 0;
                         final int finalPercent = percent;
                         final long finalReceived = received;
@@ -181,6 +250,7 @@ public class SherpaOnnxPlugin extends Plugin {
                     });
                 }
 
+                Log.i(TAG, "All downloads complete, total=" + totalBytes);
                 JSObject done = new JSObject();
                 done.put("phase", "done");
                 done.put("totalBytes", totalBytes);
@@ -194,9 +264,10 @@ public class SherpaOnnxPlugin extends Plugin {
                 JSObject err = new JSObject();
                 err.put("phase", "error");
                 err.put("message", e.getMessage());
+                final String errMsg = e.getClass().getSimpleName() + ": " + e.getMessage();
                 mainHandler.post(() -> {
                     notifyListeners("onDownloadProgress", err);
-                    call.reject("download failed: " + e.getMessage());
+                    call.reject("下載失敗: " + errMsg);
                 });
             } finally {
                 isDownloading.set(false);

@@ -46,7 +46,24 @@ export interface InitializedState {
   modelsDownloaded: boolean;
 }
 
+export interface ConnectionTestResult {
+  allOk: boolean;
+  modelsDir: string;
+  modelsDirExists: boolean;
+  modelsDirWritable: boolean;
+  urls: Array<{
+    file: string;
+    url: string;
+    status: number;
+    size?: number;
+    ok: boolean;
+    error?: string;
+  }>;
+}
+
 export interface SherpaOnnxPlugin {
+  /** Diagnostic: test network connectivity to all download URLs. */
+  testConnection(): Promise<ConnectionTestResult>;
   /** Download model files (~236MB) from HuggingFace/GitHub to internal storage. */
   downloadModels(): Promise<{ success: boolean; totalBytes?: number }>;
   /** Check if model files exist in internal storage. */
