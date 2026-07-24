@@ -144,6 +144,14 @@ public class SherpaOnnxPlugin extends Plugin {
      * testConnection — diagnostic method that pings all download URLs
      * and returns the HTTP status for each. Useful for diagnosing
      * network issues without downloading 234MB.
+     *
+     * Uses GET with Range: bytes=0-0 (1 byte) instead of HEAD because:
+     *   - HuggingFace returns 307 for HEAD on tokens.txt but 200 for GET
+     *   - Some CDNs don't support HEAD
+     *   - GET + Range gives us the real Content-Length via Content-Range
+     *
+     * Accepts 200, 206, 301, 302, 303, 307, 308 as "ok" — all are either
+     * success or redirect responses that downloadFile() handles.
      */
     @PluginMethod
     public void testConnection(PluginCall call) {
@@ -164,16 +172,39 @@ public class SherpaOnnxPlugin extends Plugin {
                     conn.setConnectTimeout(15000);
                     conn.setReadTimeout(15000);
                     conn.setInstanceFollowRedirects(false);
-                    conn.setRequestMethod("HEAD");
+                    conn.setRequestMethod("GET");
                     conn.setRequestProperty("User-Agent", "LinguaVerse/1.1");
+                    conn.setRequestProperty("Range", "bytes=0-0");
                     int code = conn.getResponseCode();
-                    long size = conn.getContentLength();
+                    // Content-Range header tells us the total file size
+                    // (format: "bytes 0-0/239233841")
+                    String contentRange = conn.getHeaderField("Content-Range");
+                    long size = -1;
+                    if (contentRange != null && contentRange.contains("/")) {
+                        try {
+                            size = Long.parseLong(contentRange.substring(contentRange.lastIndexOf("/") + 1));
+                        } catch (NumberFormatException ignored) {}
+                    }
+                    if (size < 0) {
+                        size = conn.getContentLength();
+                    }
                     item.put("status", code);
                     item.put("size", size);
-                    item.put("ok", code == 200 || code == 301 || code == 302);
-                    if (code != 200 && code != 301 && code != 302) allOk = false;
+                    // 200 = full content, 206 = partial (Range worked),
+                    // 301/302/303/307/308 = redirect (downloadFile handles these)
+                    boolean ok = code == 200 || code == 206
+                            || code == 301 || code == 302 || code == 303
+                            || code == 307 || code == 308;
+                    item.put("ok", ok);
+                    if (!ok) allOk = false;
+                    // Drain & close any stream to allow connection reuse
+                    try {
+                        InputStream is = conn.getInputStream();
+                        if (is != null) is.close();
+                    } catch (Exception ignored) {}
                     conn.disconnect();
-                    Log.i(TAG, "testConnection: " + relPath + " → HTTP " + code + " (size=" + size + ")");
+                    Log.i(TAG, "testConnection: " + relPath + " → HTTP " + code
+                            + " (size=" + size + ", contentRange=" + contentRange + ")");
                 } catch (Exception e) {
                     item.put("status", -1);
                     item.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -190,7 +221,6 @@ public class SherpaOnnxPlugin extends Plugin {
             result.put("modelsDirExists", getModelsDir().exists());
             result.put("modelsDirWritable", getModelsDir().canWrite() || getModelsDir().getParentFile().canWrite());
 
-            final boolean finalAllOk = allOk;
             mainHandler.post(() -> {
                 call.resolve(result);
             });
