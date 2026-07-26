@@ -4,6 +4,7 @@ import { TranslatePage } from "./pages/TranslatePage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AdOverlay } from "./components/AdOverlay";
+import { initAds } from "./lib/ads";
 import {
   fetchSettings, upsertSettings,
   getDailyUsage, recordTranslation, resetDailyIfNeeded,
@@ -62,6 +63,9 @@ export default function App() {
       await resetDailyIfNeeded();
       setDailyUsed(getDailyUsage());
       setAdFreeState(isAdFree());
+
+      // Initialize AdMob (international users only; China uses simulated ad)
+      initAds().catch((err) => console.warn("[App] AdMob init failed:", err));
     })();
   }, []);
 
@@ -126,7 +130,7 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <div className="header-brand">
-          <b>译境 LinguaVerse</b>
+          <b>AI譯通</b>
         </div>
         <div className="header-quota-badge">
           {adFree ? "無廣告" : `今日 ${Math.max(DAILY_FREE_LIMIT - dailyUsed, 0)}/${DAILY_FREE_LIMIT}`}

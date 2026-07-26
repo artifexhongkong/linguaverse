@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "ai.linguaverse.app",
-  appName: "译境 LinguaVerse",
+  appName: "AI譯通",
   webDir: "dist",
   android: {
     buildOptions: {

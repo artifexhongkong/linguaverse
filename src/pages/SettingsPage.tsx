@@ -10,7 +10,7 @@ interface SettingsPageProps {
   dailyLimit: number;
 }
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 
 export function SettingsPage({ settings, onToast, adFree, onRemoveAds, dailyUsed, dailyLimit }: SettingsPageProps) {
   const sourceLang = settings?.default_source_lang ?? "auto";
@@ -73,12 +73,12 @@ export function SettingsPage({ settings, onToast, adFree, onRemoveAds, dailyUsed
       <div className="settings-section">
         <div className="section-label">關於</div>
         <div className="settings-card">
-          <div className="settings-row" onClick={() => onToast(`译境 LinguaVerse v${APP_VERSION}`)}>
+          <div className="settings-row" onClick={() => onToast(`AI譯通 AITrans v${APP_VERSION}`)}>
             <div className="row-label">
               <div className="row-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               </div>
-              <div className="row-text"><div className="row-title">版本</div><div className="row-desc">译境 LinguaVerse v{APP_VERSION}</div></div>
+              <div className="row-text"><div className="row-title">版本</div><div className="row-desc">AI譯通 AITrans v{APP_VERSION}</div></div>
             </div>
             <span className="chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg></span>
           </div>
@@ -95,7 +95,7 @@ export function SettingsPage({ settings, onToast, adFree, onRemoveAds, dailyUsed
       </div>
 
       <div className="about-foot">
-        <b>译境 LinguaVerse</b><br />
+        <b>AI譯通 AITrans</b><br />
         AI 智能翻譯 · 讓每句話都恰到好處
       </div>
     </div>

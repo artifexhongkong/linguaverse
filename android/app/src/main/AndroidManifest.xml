@@ -9,6 +9,12 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- AdMob App ID — required by Google Mobile Ads SDK.
+             Format: ca-app-pub-XXXXXXXX~XXXXXXXX -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-5618359139073355~3348581000" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:name=".MainActivity"
@@ -38,12 +44,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Required for the voice input (STT) feature.
-         RECORD_AUDIO is the runtime permission (prompts the user).
-         MODIFY_AUDIO_SETTINGS is a normal permission (auto-granted at install)
-         but is also required by the WebView's AUDIO_CAPTURE resource —
-         without it, getUserMedia() throws NotReadableError even when
-         RECORD_AUDIO has been granted. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- AdMob requires ACCESS_NETWORK_STATE to check connectivity -->
 </manifest>
