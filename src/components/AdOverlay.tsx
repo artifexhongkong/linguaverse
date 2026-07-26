@@ -9,16 +9,16 @@ interface AdOverlayProps {
 /**
  * Full-screen ad overlay.
  *
- * Uses AdMob reward video ad on Android (international users).
- * Falls back to a simulated 5s countdown for:
- *   - Web platform
- *   - Users in mainland China (AdMob blocked by GFW)
- *   - Ad load failures
+ * While the ad plays, the translation runs in parallel (the caller
+ * passes a translation callback that starts immediately). When the
+ * ad completes, the translation result is already ready — saving
+ * the user's time.
+ *
+ * If AdMob is unavailable, falls back to a simulated 5s countdown.
  */
 export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
   const [status, setStatus] = useState<"loading" | "playing" | "done" | "error">("loading");
   const [countdown, setCountdown] = useState(5);
-  const [canSkip, setCanSkip] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,7 +27,9 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
       try {
         setStatus("playing");
 
-        // Start countdown timer (for simulated/fallback ads)
+        // Start countdown timer (for simulated/fallback ads — real AdMob
+        // ads take over the full screen natively, so the countdown is
+        // only visible during the fallback)
         let remaining = 5;
         const timer = setInterval(() => {
           if (cancelled) { clearInterval(timer); return; }
@@ -35,12 +37,10 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
           setCountdown(remaining);
           if (remaining <= 0) {
             clearInterval(timer);
-            setCanSkip(true);
-            setStatus("done");
           }
         }, 1000);
 
-        // Show the real ad (or simulated if China/web)
+        // Show the real ad (or simulated if web/ad failed)
         const earned = await showRewardAd();
 
         if (cancelled) return;
@@ -48,7 +48,6 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
 
         if (earned) {
           setStatus("done");
-          setCanSkip(true);
         } else {
           setStatus("error");
         }
@@ -120,7 +119,7 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
                   <path d="M11.6 16.8a3 3 0 11-5.8-1.6" />
                 </svg>
                 <p>廣告播放中…</p>
-                <p className="ad-subtitle">觀看完成後即可繼續翻譯</p>
+                <p className="ad-subtitle">翻譯正在背景進行，完成後即可查看結果</p>
               </>
             ) : (
               <>
@@ -129,7 +128,7 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
                   <path d="M5 13l4 4L19 7" />
                 </svg>
                 <p>廣告已完成</p>
-                <p className="ad-subtitle">可以繼續翻譯了</p>
+                <p className="ad-subtitle">翻譯結果已就緒</p>
               </>
             )}
           </div>
@@ -138,11 +137,11 @@ export function AdOverlay({ onComplete, onSkip }: AdOverlayProps) {
         <div className="ad-footer">
           {status === "done" ? (
             <button className="ad-continue-btn" onClick={handleComplete}>
-              繼續翻譯
+              查看翻譯結果
             </button>
           ) : (
             <button className="ad-continue-btn" disabled>
-              請等待廣告播放完成…
+              廣告播放中…（翻譯同步進行）
             </button>
           )}
         </div>

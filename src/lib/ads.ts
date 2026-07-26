@@ -1,108 +1,55 @@
 /**
- * Ad management service — AdMob (international) + region detection.
+ * Ad management service — AdMob reward video ads.
  *
  * Revenue model:
  *   - 3 free translations per day
  *   - After 3 free: watch a reward video ad to continue
  *   - "Remove ads" purchase disables all ads permanently
  *
- * Region detection:
- *   - If user is in mainland China → AdMob may not work (GFW blocks
- *     Google services). Falls back to a simulated ad (5s countdown)
- *     so the app still functions. Real China SDK (穿山甲/CSJ Pangolin)
- *     can be added later via a native plugin.
- *   - If user is international → uses AdMob reward video.
+ * Ad loading strategy:
+ *   1. On app init: AdMob.initialize() + preload reward ad
+ *   2. On showRewardAd(): show preloaded ad, then preload next
+ *   3. If ad not loaded: try to load on-demand (may take 2-3s)
+ *   4. If all fails: simulated 5s ad (so user isn't blocked)
  */
 
-import { AdMob, RewardAdPluginEvents, AdLoadInfo } from "@capacitor-community/admob";
+import { AdMob, RewardAdPluginEvents, type AdLoadInfo, type AdMobError } from "@capacitor-community/admob";
 import { Capacitor } from "@capacitor/core";
 
-// AdMob configuration
-const ADMOB_APP_ID = "ca-app-pub-5618359139073355~3348581000";
+// AdMob configuration — your real Ad Unit IDs
 const REWARD_AD_UNIT_ID = "ca-app-pub-5618359139073355/9378802730";
 
-// Google's official test ad unit IDs (for development)
-// https://developers.google.com/admob/android/test-ads
-const TEST_REWARD_AD_UNIT_ID = "ca-app-pub-3940256099942544/5224354917";
-
-// Set to true during development to use test ads (won't generate revenue)
-const USE_TEST_ADS = false;
+// Google's official test ad unit ID (for development)
+// const TEST_REWARD_AD_UNIT_ID = "ca-app-pub-3940256099942544/5224354917";
 
 let initialized = false;
 let rewardAdLoaded = false;
-let inChina = false;
-
-/**
- * Detect if the user is in mainland China.
- * Uses IP geolocation API (falls back to timezone check).
- */
-async function detectChina(): Promise<boolean> {
-  try {
-    // Method 1: IP geolocation (most accurate)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch("https://ipapi.co/json/", {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await resp.json();
-    if (data && data.country_code) {
-      return data.country_code === "CN";
-    }
-  } catch {
-    // IP API failed (possibly blocked in China itself!)
-    // If ipapi.co is unreachable, user is very likely in China
-    // (GFW blocks many international APIs)
-  }
-
-  // Method 2: Timezone check (fallback)
-  try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    return tz === "Asia/Shanghai" || tz === "Asia/Urumqi";
-  } catch {
-    return false;
-  }
-}
+let isLoading = false;
 
 /**
  * Initialize AdMob SDK. Call this on app startup.
- * Safe to call multiple times (idempotent).
  */
 export async function initAds(): Promise<void> {
   if (initialized) return;
-
-  // Only initialize on native platforms (not web)
   if (Capacitor.getPlatform() === "web") {
-    initialized = true;
-    return;
-  }
-
-  // Check if user is in China
-  inChina = await detectChina();
-  console.log("[ads] User in China:", inChina);
-
-  if (inChina) {
-    // AdMob won't work in China — skip initialization.
-    // The app will use a simulated ad (countdown timer) instead.
-    // TODO: integrate 穿山甲 (CSJ Pangolin) SDK for real ads in China.
+    console.log("[ads] Web platform — ads disabled");
     initialized = true;
     return;
   }
 
   try {
-    // Initialize AdMob
+    console.log("[ads] Initializing AdMob...");
     await AdMob.initialize({
-      initializeForTesting: USE_TEST_ADS,
+      initializeForTesting: false,
     });
-    console.log("[ads] AdMob initialized");
-
-    // Prepare reward video ad (preload for faster display)
-    await preloadRewardAd();
+    console.log("[ads] AdMob initialized successfully");
     initialized = true;
+
+    // Preload reward ad
+    preloadRewardAd();
   } catch (err) {
     console.error("[ads] AdMob init failed:", err);
-    // Fall back to simulated ad
-    initialized = true;
+    initialized = true; // still mark as initialized so we don't retry
   }
 }
 
@@ -110,74 +57,78 @@ export async function initAds(): Promise<void> {
  * Preload the reward video ad so it displays instantly when requested.
  */
 async function preloadRewardAd(): Promise<void> {
-  if (inChina || Capacitor.getPlatform() === "web") return;
+  if (Capacitor.getPlatform() === "web") return;
+  if (isLoading || rewardAdLoaded) return;
 
+  isLoading = true;
   try {
-    const adUnitId = USE_TEST_ADS ? TEST_REWARD_AD_UNIT_ID : REWARD_AD_UNIT_ID;
+    console.log("[ads] Preloading reward ad...");
 
-    // Listen for ad loading events
+    // Set up event listeners (only once)
     AdMob.addListener(RewardAdPluginEvents.Loaded, (info: AdLoadInfo) => {
-      console.log("[ads] Reward ad loaded:", info.adUnitId);
+      console.log("[ads] Reward ad LOADED:", info.adUnitId);
       rewardAdLoaded = true;
+      isLoading = false;
     });
 
-    AdMob.addListener(RewardAdPluginEvents.FailedToLoad, (error) => {
-      console.warn("[ads] Reward ad failed to load:", error);
+    AdMob.addListener(RewardAdPluginEvents.FailedToLoad, (error: AdMobError) => {
+      console.warn("[ads] Reward ad FAILED to load:", JSON.stringify(error));
       rewardAdLoaded = false;
+      isLoading = false;
     });
 
     // Prepare (load) the ad
     await AdMob.prepareRewardVideoAd({
-      adId: adUnitId,
-      // These options improve fill rate
-      npa: false, // Non-personalized ads — set true for GDPR compliance
+      adId: REWARD_AD_UNIT_ID,
+      npa: false, // Non-personalized ads
     });
-    rewardAdLoaded = true;
+    // The Loaded event will set rewardAdLoaded = true
   } catch (err) {
-    console.error("[ads] preloadRewardAd failed:", err);
+    console.error("[ads] preloadRewardAd error:", err);
     rewardAdLoaded = false;
+    isLoading = false;
   }
 }
 
 /**
- * Show a reward video ad. Returns true if the user earned the reward
- * (watched the full ad), false if they skipped or it failed.
+ * Show a reward video ad. Returns true if the user earned the reward.
  *
- * If AdMob is unavailable (China or web), falls back to a simulated
- * 5-second ad so the app remains functional.
- *
- * The reward is determined by the RewardAdPluginEvents.Rewarded event,
- * NOT the return value of showRewardVideoAd() (which returns the
- * reward item only if earned).
+ * If AdMob is unavailable (web or load failure), falls back to a
+ * simulated 5-second ad so the app remains functional.
  */
 export async function showRewardAd(): Promise<boolean> {
-  // Web platform or China: simulate ad with delay
-  if (Capacitor.getPlatform() === "web" || inChina) {
-    console.log("[ads] Using simulated ad (web/China)");
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+  // Web: simulate
+  if (Capacitor.getPlatform() === "web") {
+    console.log("[ads] Web — simulated ad");
+    await new Promise((r) => setTimeout(r, 5000));
+    return true;
+  }
+
+  // If ad isn't loaded, try to load now (may take 2-3 seconds)
+  if (!rewardAdLoaded) {
+    console.log("[ads] Ad not preloaded, loading on-demand...");
+    await preloadRewardAd();
+    // Wait a bit for load to complete
+    let waited = 0;
+    while (!rewardAdLoaded && waited < 5000) {
+      await new Promise((r) => setTimeout(r, 500));
+      waited += 500;
+    }
+  }
+
+  if (!rewardAdLoaded) {
+    // Ad still not loaded — fall back to simulated
+    console.warn("[ads] Ad load failed — using simulated ad");
+    await new Promise((r) => setTimeout(r, 5000));
     return true;
   }
 
   try {
-    // If ad isn't preloaded, try to load it now
-    if (!rewardAdLoaded) {
-      await preloadRewardAd();
-    }
+    console.log("[ads] Showing reward ad...");
 
-    if (!rewardAdLoaded) {
-      // Ad still not loaded — fall back to simulated
-      console.warn("[ads] Ad not loaded, using simulated");
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      return true;
-    }
-
-    // Set up a one-time reward listener before showing the ad.
-    // The Rewarded event fires when the user has earned the reward
-    // (watched the full video).
+    // Track reward via event listener
     let rewardEarned = false;
-    let rewardListener: { remove: () => Promise<void> } | null = null;
-
-    rewardListener = await AdMob.addListener(
+    const rewardListener = await AdMob.addListener(
       RewardAdPluginEvents.Rewarded,
       () => {
         console.log("[ads] Reward earned!");
@@ -185,7 +136,6 @@ export async function showRewardAd(): Promise<boolean> {
       },
     );
 
-    // Also listen for Dismissed (user closed the ad)
     let dismissed = false;
     const dismissListener = await AdMob.addListener(
       RewardAdPluginEvents.Dismissed,
@@ -195,28 +145,26 @@ export async function showRewardAd(): Promise<boolean> {
       },
     );
 
-    // Show the ad (this blocks until the ad is closed)
+    // Show the ad (blocks until ad is closed)
     await AdMob.showRewardVideoAd();
 
-    // Small delay to let events fire
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Wait for events to fire
+    await new Promise((r) => setTimeout(r, 300));
 
-    // Clean up listeners
-    try { await rewardListener?.remove(); } catch {}
+    // Clean up
+    try { await rewardListener.remove(); } catch {}
     try { await dismissListener.remove(); } catch {}
 
-    // Reload for next time
+    // Mark as needing reload
     rewardAdLoaded = false;
-    preloadRewardAd(); // fire and forget — preload for next use
+    // Preload next ad in background
+    preloadRewardAd();
 
-    // If reward was earned OR ad was dismissed (some ads auto-reward
-    // on dismiss), grant the reward. Being lenient here improves UX —
-    // users who watch most of the ad still get their translation.
     return rewardEarned || dismissed;
   } catch (err) {
     console.error("[ads] showRewardAd failed:", err);
-    // Fall back to simulated ad so user isn't blocked
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Fall back to simulated
+    await new Promise((r) => setTimeout(r, 5000));
     return true;
   }
 }
@@ -225,5 +173,5 @@ export async function showRewardAd(): Promise<boolean> {
  * Check if real AdMob ads are available (vs simulated).
  */
 export function isRealAdAvailable(): boolean {
-  return !inChina && Capacitor.getPlatform() !== "web" && initialized;
+  return Capacitor.getPlatform() !== "web" && initialized && rewardAdLoaded;
 }

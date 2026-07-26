@@ -28,7 +28,6 @@ export default function App() {
   const [dailyUsed, setDailyUsed] = useState(0);
   const [adFree, setAdFreeState] = useState(false);
   const [showAd, setShowAd] = useState(false);
-  const [adCallback, setAdCallback] = useState<(() => void) | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -76,42 +75,36 @@ export default function App() {
   };
 
   /**
-   * Called when the user taps "翻譯". Returns true if the translation
-   * should proceed, false if blocked (ad required or showing).
+   * Called when the user taps "翻譯".
    *
-   * Logic:
-   *   - Ad-free users: always proceed
-   *   - Free users: 3 free translations per day, then watch ad
+   * Key optimization: when an ad is needed, the translation starts
+   * IMMEDIATELY in parallel with the ad — so by the time the ad
+   * finishes, the translation result is already ready. This saves
+   * the user from waiting twice (ad duration + translation duration).
    */
   const handleTranslateRequest = (callback: () => void): boolean => {
-    if (adFree) {
+    if (adFree || dailyUsed < DAILY_FREE_LIMIT) {
       callback();
       return true;
     }
 
-    if (dailyUsed < DAILY_FREE_LIMIT) {
-      callback();
-      return true;
-    }
-
-    // Quota exhausted — show ad, then run callback after ad completes
-    setAdCallback(() => callback);
+    // Quota exhausted — start translation NOW + show ad simultaneously.
+    // The callback (doTranslate) runs in parallel with the ad overlay.
+    // When the ad completes, we just hide the overlay — the translation
+    // result is already visible underneath.
+    callback();
     setShowAd(true);
     return false;
   };
 
   const handleAdComplete = () => {
     setShowAd(false);
-    if (adCallback) {
-      adCallback();
-      setAdCallback(null);
-    }
+    // Translation already completed (or is streaming) in the background.
   };
 
   const handleAdSkip = () => {
     setShowAd(false);
-    setAdCallback(null);
-    showToast("需觀看廣告才能繼續翻譯");
+    // Translation was already running in parallel — just close the ad.
   };
 
   const handleTranslationDone = () => {
